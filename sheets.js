@@ -631,9 +631,32 @@ async function getLastEntryInfo() {
   return { hasEntries: true, daysAgo, lastDate, todayCount, yesterdayCount };
 }
 
+// ─── Session window tracking (WhatsApp 24h rule) ────────────────────────────
+async function updateLastMessageAt(phone) {
+  const sheets = await getSheetsClient();
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:A` });
+  const rows = res.data.values || [];
+  const rowIndex = rows.findIndex((r, i) => i > 0 && r[0] === phone);
+  if (rowIndex < 0) return;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: `${USERS_SHEET}!I${rowIndex + 1}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[new Date().toISOString()]] }
+  });
+}
+
+function isWithinSessionWindow(user) {
+  if (!user || !user.lastMessageAt) return false;
+  const lastMsg = new Date(user.lastMessageAt);
+  const hoursSince = (Date.now() - lastMsg.getTime()) / (1000 * 60 * 60);
+  return hoursSince < 24;
+}
+
 module.exports = {
   getCyclePaceAnalysis, getLastEntryInfo,
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount, getAllUsers,
+  updateLastMessageAt, isWithinSessionWindow,
   parseSalaryInput, parseStatementInput, getDaysUntilStatement, getBillingCycleAdvice, editLastExpense, deleteRowByIndex, bulkRecategorize, initSheet, appendExpense, batchAppendExpenses, getAllRows,
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
   getBudgets, suggestBudgets, getBudgetStatus,
@@ -720,7 +743,7 @@ async function bulkRecategorize(updates) {
 // Columns: Phone | Name | Salary Type | Salary Day | Cards JSON | Statement Dates JSON | Joined | Expense Count
 
 const USERS_SHEET = 'Users';
-const USER_HEADERS = ['Phone', 'Name', 'Salary Type', 'Salary Day', 'Cards', 'Statement Dates', 'Joined', 'Expense Count'];
+const USER_HEADERS = ['Phone', 'Name', 'Salary Type', 'Salary Day', 'Cards', 'Statement Dates', 'Joined', 'Expense Count', 'Last Message At'];
 
 async function initUsersSheet() {
   const sheets = await getSheetsClient();
@@ -732,7 +755,7 @@ async function initUsersSheet() {
       requestBody: { requests: [{ addSheet: { properties: { title: USERS_SHEET } } }] }
     });
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A1:H1`,
+      spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A1:I1`,
       valueInputOption: 'RAW', requestBody: { values: [USER_HEADERS] }
     });
     console.log('Users sheet created');
@@ -742,7 +765,7 @@ async function initUsersSheet() {
 async function getUser(phone) {
   const sheets = await getSheetsClient();
   try {
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:H` });
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:I` });
     const rows = (res.data.values || []).slice(1);
     const row = rows.find(r => r[0] === phone);
     if (!row) return null;
@@ -754,7 +777,8 @@ async function getUser(phone) {
       cards: row[4] ? JSON.parse(row[4]) : [],           // [{name, statementDay}]
       statementDates: row[5] ? JSON.parse(row[5]) : {},  // {HSBC: 5, AMEX: 12}
       joined: row[6] || null,
-      expenseCount: row[7] ? parseInt(row[7]) : 0
+      expenseCount: row[7] ? parseInt(row[7]) : 0,
+      lastMessageAt: row[8] || null
     };
   } catch { return null; }
 }
@@ -762,17 +786,18 @@ async function getUser(phone) {
 async function createUser(phone, name) {
   const sheets = await getSheetsClient();
   const now = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const nowISO = new Date().toISOString();
   await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:H`,
+    spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:I`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [[phone, name, '', '', '[]', '{}', now, 0]] }
+    requestBody: { values: [[phone, name, '', '', '[]', '{}', now, 0, nowISO]] }
   });
-  return { phone, name, salaryType: null, salaryDay: null, cards: [], statementDates: {}, joined: now, expenseCount: 0 };
+  return { phone, name, salaryType: null, salaryDay: null, cards: [], statementDates: {}, joined: now, expenseCount: 0, lastMessageAt: nowISO };
 }
 
 async function updateUser(phone, updates) {
   const sheets = await getSheetsClient();
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:H` });
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:I` });
   const rows = res.data.values || [];
   const rowIndex = rows.findIndex((r, i) => i > 0 && r[0] === phone);
   if (rowIndex < 0) return null;
@@ -786,12 +811,13 @@ async function updateUser(phone, updates) {
     updates.cards !== undefined ? JSON.stringify(updates.cards) : existing[4],
     updates.statementDates !== undefined ? JSON.stringify(updates.statementDates) : existing[5],
     existing[6],
-    updates.expenseCount !== undefined ? updates.expenseCount : existing[7]
+    updates.expenseCount !== undefined ? updates.expenseCount : existing[7],
+    updates.lastMessageAt !== undefined ? updates.lastMessageAt : (existing[8] || '')
   ];
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
-    range: `${USERS_SHEET}!A${rowIndex + 1}:H${rowIndex + 1}`,
+    range: `${USERS_SHEET}!A${rowIndex + 1}:I${rowIndex + 1}`,
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [merged] }
   });
@@ -808,7 +834,7 @@ async function incrementExpenseCount(phone) {
 async function getAllUsers() {
   const sheets = await getSheetsClient();
   try {
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:H` });
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:I` });
     const rows = (res.data.values || []).slice(1);
     return rows.filter(r => r[0]).map(row => ({
       phone: row[0],
@@ -818,7 +844,8 @@ async function getAllUsers() {
       cards: row[4] ? JSON.parse(row[4]) : [],
       statementDates: row[5] ? JSON.parse(row[5]) : {},
       joined: row[6] || null,
-      expenseCount: row[7] ? parseInt(row[7]) : 0
+      expenseCount: row[7] ? parseInt(row[7]) : 0,
+      lastMessageAt: row[8] || null
     }));
   } catch { return []; }
 }

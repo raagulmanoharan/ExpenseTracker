@@ -33,6 +33,20 @@ async function sendWhatsAppImageTo(to, mediaUrl, caption) {
   await client.messages.create({ from: FROM, to, mediaUrl: [mediaUrl], body: caption || '' });
 }
 
+// Send a Content Template message (for outside 24h session window)
+async function sendWhatsAppTemplate(to, contentSid, contentVariables) {
+  const client = getClient();
+  if (!client || !FROM) {
+    console.warn('[messaging] Twilio not configured, skipping template send');
+    return;
+  }
+  const params = { from: FROM, to, contentSid };
+  if (contentVariables && Object.keys(contentVariables).length > 0) {
+    params.contentVariables = JSON.stringify(contentVariables);
+  }
+  await client.messages.create(params);
+}
+
 // Broadcast to all users (for scheduled nudges)
 async function sendWhatsAppBroadcast(body, getAllUsers) {
   const users = await getAllUsers();
@@ -62,6 +76,7 @@ async function sendWhatsAppImageBroadcast(mediaUrl, caption, getAllUsers) {
 module.exports = {
   sendWhatsAppTo,
   sendWhatsAppImageTo,
+  sendWhatsAppTemplate,
   sendWhatsAppBroadcast,
   sendWhatsAppImageBroadcast
 };

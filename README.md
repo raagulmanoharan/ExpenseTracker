@@ -49,12 +49,11 @@ You → WhatsApp → Twilio → This server → Claude API (parse) → Google Sh
 6. Download the JSON file
 7. Share your Google Sheet with the service account email (looks like `name@project.iam.gserviceaccount.com`) — give it **Editor** access
 
-### Step 3 — Twilio WhatsApp Sandbox
+### Step 3 — Twilio WhatsApp Business Number
 
-1. Sign up at [twilio.com](https://twilio.com) (free trial)
-2. Go to **Messaging → Try it out → Send a WhatsApp Message**
-3. Join the sandbox by sending the join code to the Twilio sandbox number from your WhatsApp
-4. Keep the sandbox number handy — you'll add the webhook URL after deploying
+1. Sign up at [twilio.com](https://twilio.com) and purchase a WhatsApp-enabled number
+2. Go to **Messaging → Senders → WhatsApp Senders** and complete the business verification
+3. Note your WhatsApp Business number — you'll configure the webhook URL after deploying
 
 ### Step 4 — Deploy to Render
 
@@ -74,7 +73,7 @@ You → WhatsApp → Twilio → This server → Claude API (parse) → Google Sh
 
 ### Step 5 — Connect Twilio to your server
 
-1. Back in Twilio → Messaging → Settings → WhatsApp Sandbox Settings
+1. In Twilio → Messaging → Senders → WhatsApp Senders → select your number
 2. Set **"When a message comes in"** webhook to:
    ```
    https://your-app.onrender.com/webhook
@@ -96,11 +95,24 @@ Send **"lunch 250 Swiggy"** to your Twilio WhatsApp number and you should get a 
 
 ---
 
+### Step 6b — Content Templates (for scheduled nudges)
+
+Production WhatsApp only allows freeform messages within 24 hours of a user's last message. Scheduled nudges (reminders, digests, alerts) fire outside this window and require pre-approved Content Templates.
+
+1. Go to **Twilio Console → Content Editor**
+2. Create templates for each nudge type (see `.env.example` for the list)
+3. Submit for Meta approval (takes 24-48 hours)
+4. Once approved, add the template SIDs (`HXxxx...`) to your environment variables
+
+Without templates configured, nudges will only be delivered to users who messaged within the last 24 hours.
+
+---
+
 ## 💡 Tips
 
 - **Free tier note:** Render's free tier spins down after 15 min of inactivity. First message after sleep takes ~30s. Upgrade to Starter ($7/mo) for always-on.
 - **Multiple users:** The tracker logs all messages. Add a "From" column to `sheets.js` if Adithee also wants to use it.
-- **Twilio sandbox limit:** The sandbox requires re-joining every 72 hours. For permanent use, get a real Twilio WhatsApp number (~$5 setup).
+- **Template approval lead time:** Meta takes 24-48 hours to approve Content Templates. Create and submit them before deploying the production number.
 
 ---
 

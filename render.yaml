@@ -15,3 +15,21 @@ services:
         sync: false
       - key: NODE_ENV
         value: production
+      - key: TEMPLATE_SID_SMART_NUDGE
+        sync: false
+      - key: TEMPLATE_SID_MORNING_FOLLOWUP
+        sync: false
+      - key: TEMPLATE_SID_PRE_STATEMENT
+        sync: false
+      - key: TEMPLATE_SID_LAPSE_NUDGE
+        sync: false
+      - key: TEMPLATE_SID_DAILY_NUDGE
+        sync: false
+      - key: TEMPLATE_SID_FRIDAY_CHART
+        sync: false
+      - key: TEMPLATE_SID_FRIDAY_DIGEST
+        sync: false
+      - key: TEMPLATE_SID_OVERSPEND_ALERT
+        sync: false
+      - key: TEMPLATE_SID_EVENING_CHECKIN
+        sync: false

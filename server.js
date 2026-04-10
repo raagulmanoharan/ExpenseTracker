@@ -10,6 +10,7 @@ const {
   getBudgets, suggestBudgets, getBudgetStatus,
   checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteRowByIndex, bulkRecategorize,
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount,
+  updateLastMessageAt,
   parseSalaryInput, parseStatementInput, getBillingCycleAdvice
 } = require('./sheets');
 const { scheduleHeartbeat, buildWeeklyDigest } = require('./scheduler');
@@ -83,6 +84,13 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
 
     // ── 0. New user detection — onboarding ────────────────────────────────
     let user = await getUser(from);
+
+    // Track last message time for WhatsApp 24h session window
+    if (user) {
+      updateLastMessageAt(from).catch(err =>
+        console.error('[webhook] Failed to update LastMessageAt:', err.message)
+      );
+    }
 
     if (!user) {
       // Check if they already have expense data (existing user, just no profile yet)

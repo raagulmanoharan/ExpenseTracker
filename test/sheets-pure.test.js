@@ -14,7 +14,8 @@ process.env.GOOGLE_SHEET_ID = 'test-sheet-id';
 
 const {
   parseSalaryInput, parseStatementInput, getDaysUntilStatement,
-  getBillingCycleAdvice, getSalaryCycleBounds, computeUserCycleBounds
+  getBillingCycleAdvice, getSalaryCycleBounds, computeUserCycleBounds,
+  isWithinSessionWindow
 } = require('../sheets');
 
 describe('parseSalaryInput', () => {
@@ -167,5 +168,34 @@ describe('computeUserCycleBounds', () => {
     const result = computeUserCycleBounds(today, { salaryType: 'unknown' });
     expect(result.cycleStart.getDate()).toBe(1);
     expect(result.cycleStart.getMonth()).toBe(3); // April 1
+  });
+});
+
+describe('isWithinSessionWindow', () => {
+  test('returns false when user is null', () => {
+    expect(isWithinSessionWindow(null)).toBe(false);
+  });
+
+  test('returns false when lastMessageAt is null', () => {
+    expect(isWithinSessionWindow({ lastMessageAt: null })).toBe(false);
+  });
+
+  test('returns true when last message was 1 hour ago', () => {
+    const oneHourAgo = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
+    expect(isWithinSessionWindow({ lastMessageAt: oneHourAgo })).toBe(true);
+  });
+
+  test('returns true when last message was 23 hours ago', () => {
+    const twentyThreeHoursAgo = new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString();
+    expect(isWithinSessionWindow({ lastMessageAt: twentyThreeHoursAgo })).toBe(true);
+  });
+
+  test('returns false when last message was 25 hours ago', () => {
+    const twentyFiveHoursAgo = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    expect(isWithinSessionWindow({ lastMessageAt: twentyFiveHoursAgo })).toBe(false);
+  });
+
+  test('returns false when lastMessageAt is empty string', () => {
+    expect(isWithinSessionWindow({ lastMessageAt: '' })).toBe(false);
   });
 });

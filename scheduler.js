@@ -7,9 +7,23 @@ const {
   getBudgetStatus, suggestBudgets,
   getCyclePaceAnalysis,
   getLastEntryInfo,
-  getAllUsers
+  getAllUsers,
+  isWithinSessionWindow
 } = require('./sheets');
-const { sendWhatsAppTo, sendWhatsAppImageBroadcast } = require('./messaging');
+const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppTemplate, sendWhatsAppImageBroadcast } = require('./messaging');
+
+// ─── Content Template SIDs (for outside 24h session window) ─────────────────
+const TEMPLATE_SIDS = {
+  smart_nudge:      process.env.TEMPLATE_SID_SMART_NUDGE || null,
+  morning_followup: process.env.TEMPLATE_SID_MORNING_FOLLOWUP || null,
+  pre_statement:    process.env.TEMPLATE_SID_PRE_STATEMENT || null,
+  lapse_nudge:      process.env.TEMPLATE_SID_LAPSE_NUDGE || null,
+  daily_nudge:      process.env.TEMPLATE_SID_DAILY_NUDGE || null,
+  friday_chart:     process.env.TEMPLATE_SID_FRIDAY_CHART || null,
+  friday_digest:    process.env.TEMPLATE_SID_FRIDAY_DIGEST || null,
+  overspend_alert:  process.env.TEMPLATE_SID_OVERSPEND_ALERT || null,
+  evening_checkin:  process.env.TEMPLATE_SID_EVENING_CHECKIN || null,
+};
 
 // ─── Build QuickChart horizontal bar chart URL ────────────────────────────────
 function buildWeeklyChartUrl(byCategory, dateRange) {
@@ -248,6 +262,10 @@ const NUDGE_CHECKS = [
     windowStart: 9,   // 9 AM IST
     windowEnd: 10,
     priority: 10,      // highest — most valuable signal
+    template: {
+      sidKey: 'smart_nudge',
+      buildVariables: function(msg) { return { '1': (msg || '').substring(0, 1024) }; }
+    },
     check: async function(user) {
       if (!user.phone) return null;
       return await buildSmartNudgeForUser(user.phone);
@@ -260,6 +278,10 @@ const NUDGE_CHECKS = [
     windowStart: 9,
     windowEnd: 10,
     priority: 8,
+    template: {
+      sidKey: 'morning_followup',
+      buildVariables: function() { return {}; }
+    },
     check: async function(user) {
       var info = await getLastEntryInfo();
       if (!info.hasEntries || info.daysAgo === 0) return null;
@@ -282,6 +304,15 @@ const NUDGE_CHECKS = [
     windowEnd: 10,
     priority: 9,       // time-sensitive financial advice
     perUser: true,      // needs user-specific data (statement dates)
+    template: {
+      sidKey: 'pre_statement',
+      buildVariables: function(msg) {
+        // Extract first card name and day from the freeform message
+        var match = (msg || '').match(/your (\S+) statement/i);
+        var dayMatch = (msg || '').match(/on the (\d+)/);
+        return { '1': match ? match[1] : 'your card', '2': dayMatch ? dayMatch[1] : '' };
+      }
+    },
     check: async function(user) {
       if (!user.phone || !user.statementDates) return null;
       const today = new Date();
@@ -313,6 +344,10 @@ const NUDGE_CHECKS = [
     windowStart: 10,
     windowEnd: 11,
     priority: 7,
+    template: {
+      sidKey: 'lapse_nudge',
+      buildVariables: function() { return {}; }
+    },
     check: async function() {
       var info = await getLastEntryInfo();
       if (!info.hasEntries || info.daysAgo !== 3) return null;
@@ -332,6 +367,10 @@ const NUDGE_CHECKS = [
     windowStart: 12,   // 12 PM IST
     windowEnd: 21,     // 9 PM IST — wide window, acts like the old random delay
     priority: 3,       // lowest — generic reminder
+    template: {
+      sidKey: 'daily_nudge',
+      buildVariables: function() { return {}; }
+    },
     check: async function() {
       var nudges = [
         "Hey! Any spends today worth logging? Drop me a message!",
@@ -352,6 +391,16 @@ const NUDGE_CHECKS = [
     priority: 10,
     dayOfWeek: 5,       // Friday only
     broadcast: true,    // sends to all users, not per-user
+    template: {
+      sidKey: 'friday_digest',
+      chartSidKey: 'friday_chart',
+      buildVariables: function(msg, data) {
+        return { '1': data.weekRange || '', '2': String(data.total || ''), '3': String(data.count || '') };
+      },
+      buildChartVariables: function(chartUrl) {
+        return { '1': chartUrl };
+      }
+    },
     check: async function(user, allUsers) {
       var weekly  = await getWeeklySummary();
       var monthly = await getMonthlySummary();
@@ -365,14 +414,13 @@ const NUDGE_CHECKS = [
         ' - ' +
         now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
 
-      // Send chart image first
+      // Build chart URL (sending moved to heartbeatTick for session-aware delivery)
+      var chartUrl = null;
       if (Object.keys(weekly.byCategory).length > 0) {
         try {
-          var chartUrl = buildWeeklyChartUrl(weekly.byCategory, dateRange);
-          await sendWhatsAppImageBroadcast(chartUrl, '', async () => allUsers);
-          console.log('[heartbeat] Chart sent');
+          chartUrl = buildWeeklyChartUrl(weekly.byCategory, dateRange);
         } catch (chartErr) {
-          console.error('[heartbeat] Chart failed:', chartErr.message);
+          console.error('[heartbeat] Chart URL build failed:', chartErr.message);
         }
       }
 
@@ -404,7 +452,7 @@ const NUDGE_CHECKS = [
           suggLines + '\n\nReply *suggest budgets* anytime to see this again.';
       }
 
-      return msg;
+      return { freeformMessage: msg, templateData: { weekRange: dateRange, total: weekly.total, count: weekly.count, chartUrl: chartUrl } };
     }
   },
   {
@@ -415,6 +463,14 @@ const NUDGE_CHECKS = [
     windowEnd: 21,
     priority: 9,
     broadcast: true,
+    template: {
+      sidKey: 'overspend_alert',
+      buildVariables: function(msg) {
+        // Extract category summary from the freeform message for condensed template
+        var lines = (msg || '').match(/\*(\w[\w\s]*)\*: Rs\.[^\n]+/g) || [];
+        return { '1': lines.map(function(l) { return l.replace(/\*/g, ''); }).join(', ') || 'some categories' };
+      }
+    },
     check: async function() {
       var result = await getOverspendAlerts();
       if (!result) return null;
@@ -434,6 +490,10 @@ const NUDGE_CHECKS = [
     windowStart: 20,   // 8 PM IST
     windowEnd: 21,
     priority: 5,
+    template: {
+      sidKey: 'evening_checkin',
+      buildVariables: function() { return {}; }
+    },
     check: async function() {
       var info = await getLastEntryInfo();
       if (!info.hasEntries || info.daysAgo >= 7) return null;
@@ -450,6 +510,59 @@ const NUDGE_CHECKS = [
     }
   }
 ];
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SESSION-AWARE SENDING — freeform within 24h, template outside
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Normalise check() return: string → { freeformMessage, templateData }
+function normaliseCheckResult(result) {
+  if (result === null || result === undefined) return null;
+  if (typeof result === 'string') return { freeformMessage: result, templateData: {} };
+  return result;
+}
+
+async function sendNudgeToUser(nudge, user, result) {
+  var data = normaliseCheckResult(result);
+  if (!data) return false;
+
+  if (isWithinSessionWindow(user)) {
+    await sendWhatsAppTo(user.phone, data.freeformMessage);
+    return true;
+  }
+
+  // Outside 24h — must use template
+  var templateConfig = nudge.template;
+  var sid = templateConfig ? TEMPLATE_SIDS[templateConfig.sidKey] : null;
+  if (!sid) {
+    console.warn('[heartbeat] No template SID for ' + nudge.id + ', skipping ' + user.phone);
+    return false;
+  }
+  try {
+    var variables = templateConfig.buildVariables(data.freeformMessage, data.templateData);
+    await sendWhatsAppTemplate(user.phone, sid, variables);
+    return true;
+  } catch (err) {
+    console.error('[heartbeat] Template send failed for ' + nudge.id + ' to ' + user.phone + ':', err.message);
+    return false;
+  }
+}
+
+// Send friday_digest chart image (session-aware)
+async function sendChartToUser(nudge, user, chartUrl) {
+  if (isWithinSessionWindow(user)) {
+    await sendWhatsAppImageTo(user.phone, chartUrl, '');
+    return;
+  }
+  var chartSid = TEMPLATE_SIDS[nudge.template.chartSidKey];
+  if (!chartSid) return;
+  try {
+    var vars = nudge.template.buildChartVariables(chartUrl);
+    await sendWhatsAppTemplate(user.phone, chartSid, vars);
+  } catch (err) {
+    console.error('[heartbeat] Chart template failed for ' + user.phone + ':', err.message);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HEARTBEAT TICK — runs every 30 minutes, picks the most overdue check per user
@@ -472,24 +585,42 @@ async function heartbeatTick() {
       if (!isInTimeWindow(nudge.windowStart, nudge.windowEnd)) continue;
       if (nudge.dayOfWeek !== undefined && getISTDayOfWeek() !== nudge.dayOfWeek) continue;
 
-      // Use first user phone as broadcast state key
       const statePhone = '_broadcast';
       const overdueHrs = getOverdueHours(nudge.id, statePhone, nudge.cadenceHours);
       if (overdueHrs < 0) continue;
 
       try {
-        const msg = await nudge.check(null, users);
-        if (msg) {
+        const result = await nudge.check(null, users);
+        const data = normaliseCheckResult(result);
+        if (data) {
+          // friday_digest: send chart image first
+          if (nudge.id === 'friday_digest' && data.templateData && data.templateData.chartUrl) {
+            for (const user of users) {
+              if (!user.phone) continue;
+              try {
+                await sendChartToUser(nudge, user, data.templateData.chartUrl);
+              } catch (err) {
+                console.error('[heartbeat] chart send failed for ' + user.phone + ':', err.message);
+              }
+            }
+            console.log('[heartbeat] Chart sent');
+          }
+
+          // Send text message to all users
+          let anySent = false;
           for (const user of users) {
             if (!user.phone) continue;
             try {
-              await sendWhatsAppTo(user.phone, msg);
+              var sent = await sendNudgeToUser(nudge, user, data);
+              if (sent) anySent = true;
             } catch (err) {
               console.error('[heartbeat] ' + nudge.id + ' send failed for ' + user.phone + ':', err.message);
             }
           }
-          markSent(nudge.id, statePhone);
-          console.log('[heartbeat] ' + nudge.id + ' broadcast sent');
+          if (anySent) {
+            markSent(nudge.id, statePhone);
+            console.log('[heartbeat] ' + nudge.id + ' broadcast sent');
+          }
         }
       } catch (err) {
         console.error('[heartbeat] ' + nudge.id + ' check failed:', err.message);
@@ -502,7 +633,6 @@ async function heartbeatTick() {
     for (const user of users) {
       if (!user.phone) continue;
 
-      // Find eligible checks: in time window, day matches, overdue
       var bestNudge = null;
       var bestOverdue = -Infinity;
 
@@ -513,7 +643,6 @@ async function heartbeatTick() {
         var overdueHrs = getOverdueHours(nudge.id, user.phone, nudge.cadenceHours);
         if (overdueHrs < 0) continue;
 
-        // Score: overdue hours * priority weight
         var score = overdueHrs * nudge.priority;
         if (score > bestOverdue) {
           bestOverdue = score;
@@ -526,9 +655,11 @@ async function heartbeatTick() {
       try {
         var msg = await bestNudge.check(user);
         if (msg) {
-          await sendWhatsAppTo(user.phone, msg);
-          markSent(bestNudge.id, user.phone);
-          console.log('[heartbeat] ' + bestNudge.id + ' sent to ' + user.phone);
+          var sent = await sendNudgeToUser(bestNudge, user, msg);
+          if (sent) {
+            markSent(bestNudge.id, user.phone);
+            console.log('[heartbeat] ' + bestNudge.id + ' sent to ' + user.phone);
+          }
         } else {
           // Check returned null (not actionable) — mark as checked so we don't
           // keep re-evaluating it every 30 min. Use shorter cooldown.
@@ -559,6 +690,16 @@ function scheduleHeartbeat() {
   NUDGE_CHECKS.forEach(function(n) {
     console.log('  ' + n.id + ' — ' + n.description + ' (every ' + n.cadenceHours + 'h, ' + n.windowStart + '-' + n.windowEnd + ' IST, priority ' + n.priority + ')');
   });
+
+  // Log template SID status
+  var configured = Object.entries(TEMPLATE_SIDS).filter(function(e) { return e[1]; });
+  var missing = Object.entries(TEMPLATE_SIDS).filter(function(e) { return !e[1]; });
+  if (configured.length > 0) {
+    console.log('[heartbeat] Templates configured: ' + configured.map(function(e) { return e[0]; }).join(', '));
+  }
+  if (missing.length > 0) {
+    console.warn('[heartbeat] Templates MISSING (outside-24h sends will be skipped): ' + missing.map(function(e) { return e[0]; }).join(', '));
+  }
 }
 
 module.exports = {
@@ -572,8 +713,11 @@ module.exports = {
   heartbeatTick,
   heartbeatState,
   NUDGE_CHECKS,
+  TEMPLATE_SIDS,
   isInTimeWindow,
   getOverdueHours,
+  sendNudgeToUser,
+  normaliseCheckResult,
   loadState,
   saveState
 };
