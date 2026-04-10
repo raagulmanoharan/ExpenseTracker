@@ -91,7 +91,7 @@ async function parsePDFStatement(mediaUrl, user) {
         }
       ]
     }]
-  });
+  }));
 
   const raw = response.content[0].text.trim();
   const parsed = safeParseJSON(raw);
