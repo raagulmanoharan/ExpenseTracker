@@ -1,4 +1,6 @@
 const cron = require('node-cron');
+const fs = require('fs');
+const path = require('path');
 const { getCategoryEmoji, isCommitted, getMonthName } = require('./constants');
 const {
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
@@ -91,8 +93,35 @@ async function buildWeeklyDigest() {
 // Inspired by OpenClaw's heartbeat pattern
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// In-memory state: { "nudgeId:phone" => Date }
+// Persistent state: { "nudgeId:phone" => Date }
+// Survives server restarts via JSON file on disk
+const STATE_FILE = path.join(__dirname, '.heartbeat-state.json');
 const heartbeatState = new Map();
+
+function loadState() {
+  try {
+    if (!fs.existsSync(STATE_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    for (const [key, iso] of Object.entries(raw)) {
+      heartbeatState.set(key, new Date(iso));
+    }
+    console.log('[heartbeat] Loaded ' + heartbeatState.size + ' state entries from disk');
+  } catch (err) {
+    console.error('[heartbeat] Failed to load state, starting fresh:', err.message);
+  }
+}
+
+function saveState() {
+  try {
+    const obj = {};
+    for (const [key, date] of heartbeatState) {
+      obj[key] = date.toISOString();
+    }
+    fs.writeFileSync(STATE_FILE, JSON.stringify(obj), 'utf8');
+  } catch (err) {
+    console.error('[heartbeat] Failed to save state:', err.message);
+  }
+}
 
 function getStateKey(nudgeId, phone) {
   return nudgeId + ':' + phone;
@@ -104,6 +133,7 @@ function getLastSent(nudgeId, phone) {
 
 function markSent(nudgeId, phone) {
   heartbeatState.set(getStateKey(nudgeId, phone), new Date());
+  saveState();
 }
 
 // How overdue is this nudge? Returns hours overdue (negative = not due yet)
@@ -521,6 +551,7 @@ async function heartbeatTick() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function scheduleHeartbeat() {
+  loadState();
   // Run every 30 minutes
   cron.schedule('*/30 * * * *', heartbeatTick, { timezone: 'UTC' });
   console.log('[heartbeat] Scheduled — ticking every 30 min');
@@ -542,5 +573,7 @@ module.exports = {
   heartbeatState,
   NUDGE_CHECKS,
   isInTimeWindow,
-  getOverdueHours
+  getOverdueHours,
+  loadState,
+  saveState
 };

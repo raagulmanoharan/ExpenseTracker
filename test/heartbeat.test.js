@@ -1,3 +1,10 @@
+// Mock fs before requiring scheduler so persistence doesn't touch disk
+jest.mock('fs', () => ({
+  existsSync: jest.fn(() => false),
+  readFileSync: jest.fn(() => '{}'),
+  writeFileSync: jest.fn(),
+}));
+
 const {
   heartbeatState,
   NUDGE_CHECKS,
@@ -5,7 +12,11 @@ const {
   getOverdueHours,
   buildWeeklyChartUrl,
   getTopDiscretionaryCategory,
+  loadState,
+  saveState,
 } = require('../scheduler');
+
+const fs = require('fs');
 
 // Mock dependencies
 jest.mock('node-cron', () => ({ schedule: jest.fn() }));
@@ -163,6 +174,61 @@ describe('Heartbeat Engine', () => {
     test('returns null for empty input', () => {
       expect(getTopDiscretionaryCategory({})).toBeNull();
       expect(getTopDiscretionaryCategory(null)).toBeNull();
+    });
+  });
+
+  describe('State persistence', () => {
+    beforeEach(() => {
+      heartbeatState.clear();
+      jest.clearAllMocks();
+    });
+
+    test('loadState restores timestamps from disk', () => {
+      const stored = {
+        'smart_nudge:+91123': '2026-04-10T09:00:00.000Z',
+        'daily_nudge:+91456': '2026-04-10T14:00:00.000Z',
+      };
+      fs.existsSync.mockReturnValue(true);
+      fs.readFileSync.mockReturnValue(JSON.stringify(stored));
+
+      loadState();
+
+      expect(heartbeatState.size).toBe(2);
+      expect(heartbeatState.get('smart_nudge:+91123')).toEqual(new Date('2026-04-10T09:00:00.000Z'));
+      expect(heartbeatState.get('daily_nudge:+91456')).toEqual(new Date('2026-04-10T14:00:00.000Z'));
+    });
+
+    test('loadState handles missing file gracefully', () => {
+      fs.existsSync.mockReturnValue(false);
+      loadState();
+      expect(heartbeatState.size).toBe(0);
+    });
+
+    test('loadState handles corrupt file gracefully', () => {
+      fs.existsSync.mockReturnValue(true);
+      fs.readFileSync.mockReturnValue('not json');
+      loadState();
+      expect(heartbeatState.size).toBe(0);
+    });
+
+    test('saveState writes all entries to disk', () => {
+      heartbeatState.set('smart_nudge:+91123', new Date('2026-04-10T09:00:00.000Z'));
+      heartbeatState.set('daily_nudge:+91456', new Date('2026-04-10T14:00:00.000Z'));
+
+      saveState();
+
+      expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+      const written = JSON.parse(fs.writeFileSync.mock.calls[0][1]);
+      expect(written['smart_nudge:+91123']).toBe('2026-04-10T09:00:00.000Z');
+      expect(written['daily_nudge:+91456']).toBe('2026-04-10T14:00:00.000Z');
+    });
+
+    test('markSent triggers saveState', () => {
+      // getOverdueHours + markSent integration
+      expect(getOverdueHours('test', '+91123', 24)).toBe(24); // never sent
+      heartbeatState.set('test:+91123', new Date());
+      saveState();
+      expect(fs.writeFileSync).toHaveBeenCalled();
     });
   });
 });
