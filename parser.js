@@ -4,6 +4,24 @@ const { CATEGORIES, safeParseJSON } = require('./constants');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// Retry helper for transient Anthropic API errors (529 overloaded, 500, etc.)
+async function callWithRetry(fn, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.status || err.statusCode || 0;
+      if (i < retries && (status === 529 || status === 500 || status === 503)) {
+        const delay = (i + 1) * 1000;
+        console.warn(`[anthropic] ${status} on attempt ${i + 1}, retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 const SYSTEM_PROMPT = `You are a smart expense parser for a WhatsApp expense tracker called Moolah, used by someone in India.
 Parse messages, receipts, bank SMS screenshots and return ONLY a JSON object — no markdown, no explanation.
 
@@ -45,12 +63,12 @@ RULES:
 - Return ONLY valid JSON`;
 
 async function parseExpense(message) {
-  const response = await client.messages.create({
+  const response = await callWithRetry(() => client.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 300,
     system: SYSTEM_PROMPT,
     messages: [{ role: 'user', content: message }]
-  });
+  }));
   return safeParseJSON(response.content[0].text);
 }
 
@@ -63,7 +81,7 @@ async function parseExpenseFromImage(mediaUrl, mediaType, caption) {
   const resolvedType = resolveMediaType(mediaType);
   const prompt = caption ? `Expense image. User note: "${caption}". Extract expense.` : 'Receipt or bank SMS. Extract the expense.';
 
-  const response = await client.messages.create({
+  const response = await callWithRetry(() => client.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 300,
     system: SYSTEM_PROMPT,
@@ -71,7 +89,7 @@ async function parseExpenseFromImage(mediaUrl, mediaType, caption) {
       { type: 'image', source: { type: 'base64', media_type: resolvedType, data: base64Image } },
       { type: 'text', text: prompt }
     ]}]
-  });
+  }));
   return safeParseJSON(response.content[0].text);
 }
 

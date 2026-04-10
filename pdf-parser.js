@@ -4,6 +4,24 @@ const { CATEGORIES, safeParseJSON, parseIndianDate } = require('./constants');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// Retry helper for transient Anthropic API errors (529 overloaded, 500, etc.)
+async function callWithRetry(fn, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.status || err.statusCode || 0;
+      if (i < retries && (status === 529 || status === 500 || status === 503)) {
+        const delay = (i + 1) * 1000;
+        console.warn(`[anthropic] ${status} on attempt ${i + 1}, retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 function buildPdfSystemPrompt(user) {
   const cards = user?.statementDates ? Object.keys(user.statementDates) : [];
   const cardContext = cards.length > 0
@@ -56,7 +74,7 @@ async function parsePDFStatement(mediaUrl, user) {
 
   const base64PDF = Buffer.from(pdfResponse.data).toString('base64');
 
-  const response = await client.messages.create({
+  const response = await callWithRetry(() => client.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 4000,
     system: buildPdfSystemPrompt(user),

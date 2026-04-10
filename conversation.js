@@ -3,6 +3,24 @@ const { safeParseJSON } = require('./constants');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// Retry helper for transient Anthropic API errors (529 overloaded, 500, etc.)
+async function callWithRetry(fn, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.status || err.statusCode || 0;
+      if (i < retries && (status === 529 || status === 500 || status === 503)) {
+        const delay = (i + 1) * 1000;
+        console.warn(`[anthropic] ${status} on attempt ${i + 1}, retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 function buildSystemPrompt(user) {
   const name = user?.name || 'the user';
   const cards = user?.statementDates ? Object.keys(user.statementDates) : [];
@@ -64,7 +82,7 @@ async function handleConversation(message, expenseData, user) {
   })));
 
   try {
-    const response = await client.messages.create({
+    const response = await callWithRetry(() => client.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 1000,
       system: buildSystemPrompt(user),
@@ -72,7 +90,7 @@ async function handleConversation(message, expenseData, user) {
         role: 'user',
         content: `Expense data (most recent last):\n${dataContext}\n\nUser message: "${message}"`
       }]
-    });
+    }));
 
     const raw = response.content[0].text.trim();
     return safeParseJSON(raw);
