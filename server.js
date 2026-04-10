@@ -12,7 +12,7 @@ const {
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount,
   parseSalaryInput, parseStatementInput, getBillingCycleAdvice
 } = require('./sheets');
-const { scheduleDailyNudge, scheduleOverspendCheck, scheduleFridayDigest, scheduleSmartNudge, scheduleEveningCheckIn, scheduleMorningFollowUp, scheduleLapseNudge, schedulePreStatementNudge, buildWeeklyDigest } = require('./scheduler');
+const { scheduleHeartbeat, buildWeeklyDigest } = require('./scheduler');
 const { sendWhatsAppTo, sendWhatsAppImageTo } = require('./messaging');
 const { handleConversation } = require('./conversation');
 
@@ -74,7 +74,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
   function sendResponse() {
     if (responseSent) return;
     responseSent = true;
-    sendResponse();
+    res.type('text/xml').send(twiml.toString());
   }
 
   console.log(`[${new Date().toISOString()}] ${from} | ${mediaType || 'text'} | "${incomingMsg.substring(0, 100)}"`);
@@ -548,14 +548,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await initSheet();
   await initUsersSheet();
-  scheduleDailyNudge();
-  scheduleOverspendCheck();
-  scheduleFridayDigest();
-  scheduleSmartNudge();
-  scheduleEveningCheckIn();
-  scheduleMorningFollowUp();
-  scheduleLapseNudge();
-  schedulePreStatementNudge();
+  scheduleHeartbeat();
   app.listen(PORT, () => console.log(`✅ Expense tracker v4 running on port ${PORT}`));
 }
 

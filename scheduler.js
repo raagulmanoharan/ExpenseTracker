@@ -7,7 +7,7 @@ const {
   getLastEntryInfo,
   getAllUsers
 } = require('./sheets');
-const { sendWhatsAppTo, sendWhatsAppBroadcast, sendWhatsAppImageBroadcast } = require('./messaging');
+const { sendWhatsAppTo, sendWhatsAppImageBroadcast } = require('./messaging');
 
 // ─── Build QuickChart horizontal bar chart URL ────────────────────────────────
 function buildWeeklyChartUrl(byCategory, dateRange) {
@@ -86,64 +86,69 @@ async function buildWeeklyDigest() {
   return { text, chartUrl };
 }
 
-// ─── Daily nudge: random 12–9 PM IST (06:30 UTC trigger) ─────────────────────
-function scheduleDailyNudge() {
-  cron.schedule('30 6 * * *', async function() {
-    var delayMs = Math.floor(Math.random() * 9 * 60 * 60 * 1000);
-    console.log('Nudge fires in ' + Math.round(delayMs / 3600000) + 'h');
-    setTimeout(async function() {
-      try {
-        var nudges = [
-          "Hey! Any spends today worth logging? Drop me a message!",
-          "Quick check-in. How's the wallet today? Log something?",
-          "Expense reminder — send me a receipt, bank SMS, or just type it out.",
-          "Any receipts piling up? Send them over!",
-          "End of day check — any expenses from today to track?"
-        ];
-        await sendWhatsAppBroadcast(nudges[Math.floor(Math.random() * nudges.length)], getAllUsers);
-        console.log('Daily nudge sent');
-      } catch (err) { console.error('Nudge failed:', err.message); }
-    }, delayMs);
-  }, { timezone: 'UTC' });
-  console.log('Daily nudge ready (12-9 PM IST)');
+// ═══════════════════════════════════════════════════════════════════════════════
+// HEARTBEAT ENGINE — single cron, rotating checks, cadence + time windows
+// Inspired by OpenClaw's heartbeat pattern
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// In-memory state: { "nudgeId:phone" => Date }
+const heartbeatState = new Map();
+
+function getStateKey(nudgeId, phone) {
+  return nudgeId + ':' + phone;
 }
 
-// ─── Overspend check: 8 PM IST (14:30 UTC) daily ─────────────────────────────
-function scheduleOverspendCheck() {
-  cron.schedule('30 14 * * *', async function() {
-    try {
-      var result = await getOverspendAlerts();
-      if (!result) return;
-      var lines = result.alerts.map(function(a) {
-        return '  ' + getCategoryEmoji(a.category) + ' *' + a.category + '*: Rs.' +
-          a.spent.toLocaleString('en-IN') + ' vs Rs.' + a.baseline.toLocaleString('en-IN') +
-          ' avg (+' + a.pct + '%)';
-      }).join('\n');
-      await sendWhatsAppBroadcast(
-        '*Spending Alert* (' + result.weeksOfData + ' weeks of data)\n\nOver baseline in:\n' +
-        lines + '\n\nSend *summary* for the full picture.',
-        getAllUsers
-      );
-    } catch (err) { console.error('Overspend check failed:', err.message); }
-  }, { timezone: 'UTC' });
-  console.log('Overspend check ready (8 PM IST)');
+function getLastSent(nudgeId, phone) {
+  return heartbeatState.get(getStateKey(nudgeId, phone)) || null;
 }
 
-// ─── Smart nudge helper: build personalized message for one user ──────────────
+function markSent(nudgeId, phone) {
+  heartbeatState.set(getStateKey(nudgeId, phone), new Date());
+}
+
+// How overdue is this nudge? Returns hours overdue (negative = not due yet)
+function getOverdueHours(nudgeId, phone, cadenceHours) {
+  const last = getLastSent(nudgeId, phone);
+  if (!last) return cadenceHours; // never sent = fully overdue
+  const hoursSince = (Date.now() - last.getTime()) / (1000 * 60 * 60);
+  return hoursSince - cadenceHours;
+}
+
+// Is the current IST hour within the nudge's time window?
+function isInTimeWindow(windowStart, windowEnd) {
+  const now = new Date();
+  const istHour = (now.getUTCHours() + 5 + (now.getUTCMinutes() >= 30 ? 1 : 0)) % 24;
+  // Handle the half-hour offset more precisely
+  const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
+  const istH = Math.floor(istMinutes / 60);
+  if (windowStart <= windowEnd) {
+    return istH >= windowStart && istH < windowEnd;
+  }
+  // Wraps midnight
+  return istH >= windowStart || istH < windowEnd;
+}
+
+// Get current IST day of week (0=Sun, 5=Fri, 6=Sat)
+function getISTDayOfWeek() {
+  const now = new Date();
+  const istMs = now.getTime() + (330 * 60 * 1000);
+  return new Date(istMs).getUTCDay();
+}
+
+// ─── Smart nudge: projection-based spending insight ──────────────────────────
 async function buildSmartNudgeForUser(phone) {
   var pace = getCyclePaceAnalysis(phone);
-  if (pace.then) pace = await pace; // handle async
+  if (pace.then) pace = await pace;
 
   var proj = pace.projection;
   var comp = pace.comparison;
 
-  // Need at least 25% through cycle (~8 days) for meaningful projection
   if (pace.cycleProgress < 25) return null;
   if (proj.dailyRate === 0) return null;
 
   var daysUntilPayday = pace.daysUntilPayday;
 
-  // ── With comparison baseline ──
+  // With comparison baseline
   if (comp && comp.paceRatio <= 10) {
     var paceRatio = comp.paceRatio;
 
@@ -177,8 +182,8 @@ async function buildSmartNudgeForUser(phone) {
     }
   }
 
-  // ── No comparison — projection-only, send on Wednesdays ──
-  if (new Date().getDay() === 3) {
+  // No comparison — Wednesday midweek check-in only
+  if (getISTDayOfWeek() === 3) {
     var topLine = proj.topCategories.length > 0
       ? '\n\nTop categories:\n' + proj.topCategories.map(function(c) {
           return '  ' + getCategoryEmoji(c.cat) + ' ' + c.cat + ': Rs.' + c.amt.toLocaleString('en-IN') + ' (Rs.' + c.daily.toLocaleString('en-IN') + '/day)';
@@ -193,33 +198,131 @@ async function buildSmartNudgeForUser(phone) {
   return null;
 }
 
-// ─── Smart nudge: 9 AM IST (03:30 UTC) daily ─────────────────────────────────
-function scheduleSmartNudge() {
-  cron.schedule('30 3 * * *', async function() {
-    try {
-      var users = await getAllUsers();
-      for (var u = 0; u < users.length; u++) {
-        var user = users[u];
-        if (!user.phone) continue;
-        try {
-          var msg = await buildSmartNudgeForUser(user.phone);
-          if (msg) {
-            await sendWhatsAppTo(user.phone, msg);
-            console.log('Smart nudge sent to ' + user.phone);
-          }
-        } catch (userErr) {
-          console.error('Smart nudge failed for ' + user.phone + ':', userErr.message);
-        }
-      }
-    } catch (err) { console.error('Smart nudge failed:', err.message); }
-  }, { timezone: 'UTC' });
-  console.log('Smart nudge ready (9 AM IST)');
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function getTopDiscretionaryCategory(byCategory) {
+  var disc = Object.entries(byCategory || {})
+    .filter(function(e) { return !isCommitted(e[0]); })
+    .sort(function(a, b) { return b[1] - a[1]; });
+  return disc.length > 0 ? { category: disc[0][0], amount: disc[0][1] } : null;
 }
 
-// ─── Friday digest: 7 PM IST (13:30 UTC) ─────────────────────────────────────
-function scheduleFridayDigest() {
-  cron.schedule('30 13 * * 5', async function() {
-    try {
+// ═══════════════════════════════════════════════════════════════════════════════
+// NUDGE DEFINITIONS — each is a check with cadence, time window, condition
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const NUDGE_CHECKS = [
+  {
+    id: 'smart_nudge',
+    description: 'Projection-based spending insight',
+    cadenceHours: 24,
+    windowStart: 9,   // 9 AM IST
+    windowEnd: 10,
+    priority: 10,      // highest — most valuable signal
+    check: async function(user) {
+      if (!user.phone) return null;
+      return await buildSmartNudgeForUser(user.phone);
+    }
+  },
+  {
+    id: 'morning_followup',
+    description: 'Yesterday was blank — catch up',
+    cadenceHours: 24,
+    windowStart: 9,
+    windowEnd: 10,
+    priority: 8,
+    check: async function(user) {
+      var info = await getLastEntryInfo();
+      if (!info.hasEntries || info.daysAgo === 0) return null;
+      if (info.yesterdayCount > 0) return null;
+      if (info.daysAgo < 1 || info.daysAgo >= 3) return null;
+      var msgs = [
+        "Morning! Yesterday's expenses are still missing — anything you remember? Even a rough total helps.",
+        "Yesterday's a blank in your tracker. Want to add anything before it fades completely?",
+        "Hey — nothing logged from yesterday. Drop me anything you remember and I'll sort it.",
+        "Quick morning check — yesterday still empty. Even one or two entries keeps the picture clear.",
+      ];
+      return msgs[Math.floor(Math.random() * msgs.length)];
+    }
+  },
+  {
+    id: 'pre_statement',
+    description: 'CC statement generates in 2 days',
+    cadenceHours: 24,
+    windowStart: 9,
+    windowEnd: 10,
+    priority: 9,       // time-sensitive financial advice
+    perUser: true,      // needs user-specific data (statement dates)
+    check: async function(user) {
+      if (!user.phone || !user.statementDates) return null;
+      const today = new Date();
+      const targetDate = new Date(today);
+      targetDate.setDate(today.getDate() + 2);
+      const targetDay = targetDate.getDate();
+      const dates = user.statementDates;
+      const results = [];
+
+      for (const [card, day] of Object.entries(dates)) {
+        if (day !== targetDay) continue;
+        const daysIfWait = 50;
+        const daysIfNow = 20;
+        const msgs = [
+          'Heads up — your ' + card + ' statement generates in 2 days (on the ' + day + 'th).\n\nIf you have a big purchase coming up, waiting till after the ' + day + 'th gives you ~' + daysIfWait + ' interest-free days instead of ~' + daysIfNow + '.',
+          'Your ' + card + ' billing cycle closes in 2 days.\n\nPlanning a big purchase? Waiting till after the ' + day + 'th maximises your interest-free window to ~' + daysIfWait + ' days.',
+          card + ' statement in 2 days. Any large spend planned? Hold off till the ' + (day + 1) + 'th and you get the full ~' + daysIfWait + '-day interest-free period.',
+        ];
+        results.push(msgs[Math.floor(Math.random() * msgs.length)]);
+      }
+
+      return results.length > 0 ? results.join('\n\n') : null;
+    }
+  },
+  {
+    id: 'lapse_nudge',
+    description: '3 days without logging',
+    cadenceHours: 24,
+    windowStart: 10,
+    windowEnd: 11,
+    priority: 7,
+    check: async function() {
+      var info = await getLastEntryInfo();
+      if (!info.hasEntries || info.daysAgo !== 3) return null;
+      var msgs = [
+        "Hey, it's been a few days since your last log. No stress — even catching up on the big ones keeps the picture clear.",
+        "Three days without a log. Totally fine — life gets busy. Just type anything and we'll pick up from there.",
+        "Your spending story has a gap. No pressure to backfill everything — even one entry gets things moving again.",
+        "Been quiet for a few days! Any big spends worth adding? Otherwise just start fresh from today.",
+      ];
+      return msgs[Math.floor(Math.random() * msgs.length)];
+    }
+  },
+  {
+    id: 'daily_nudge',
+    description: 'Random midday reminder to log',
+    cadenceHours: 24,
+    windowStart: 12,   // 12 PM IST
+    windowEnd: 21,     // 9 PM IST — wide window, acts like the old random delay
+    priority: 3,       // lowest — generic reminder
+    check: async function() {
+      var nudges = [
+        "Hey! Any spends today worth logging? Drop me a message!",
+        "Quick check-in. How's the wallet today? Log something?",
+        "Expense reminder — send me a receipt, bank SMS, or just type it out.",
+        "Any receipts piling up? Send them over!",
+        "End of day check — any expenses from today to track?"
+      ];
+      return nudges[Math.floor(Math.random() * nudges.length)];
+    }
+  },
+  {
+    id: 'friday_digest',
+    description: 'Weekly summary with chart',
+    cadenceHours: 168,  // weekly
+    windowStart: 19,    // 7 PM IST
+    windowEnd: 20,
+    priority: 10,
+    dayOfWeek: 5,       // Friday only
+    broadcast: true,    // sends to all users, not per-user
+    check: async function(user, allUsers) {
       var weekly  = await getWeeklySummary();
       var monthly = await getMonthlySummary();
       var budgetSuggestion = await suggestBudgets();
@@ -232,18 +335,18 @@ function scheduleFridayDigest() {
         ' - ' +
         now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
 
-      // 1. Chart image — weekly category breakdown
+      // Send chart image first
       if (Object.keys(weekly.byCategory).length > 0) {
         try {
           var chartUrl = buildWeeklyChartUrl(weekly.byCategory, dateRange);
-          await sendWhatsAppImageBroadcast(chartUrl, '', getAllUsers);
-          console.log('Chart sent');
+          await sendWhatsAppImageBroadcast(chartUrl, '', async () => allUsers);
+          console.log('[heartbeat] Chart sent');
         } catch (chartErr) {
-          console.error('Chart failed, skipping:', chartErr.message);
+          console.error('[heartbeat] Chart failed:', chartErr.message);
         }
       }
 
-      // 2. Text digest
+      // Build text digest
       var msg =
         '*Weekly Digest — ' + dateRange + '*\n\n' +
         '*This week: Rs.' + weekly.total + '* (' + weekly.count + ' transactions)\n' +
@@ -252,14 +355,12 @@ function scheduleFridayDigest() {
         '*' + (monthly.cycleLabel || getMonthName()) + ' so far: Rs.' + monthly.total + '*\n' +
         monthly.breakdown;
 
-      // Tip
       var topDisc = getTopDiscretionaryCategory(weekly.byCategory);
       if (topDisc) {
         msg += '\n\nTip: Biggest discretionary spend this week — *' + topDisc.category +
           '* at Rs.' + Math.round(topDisc.amount).toLocaleString('en-IN') + '. Small cuts here add up.';
       }
 
-      // Auto budget suggestion at exactly 2 weeks
       if (budgetSuggestion.ready && budgetSuggestion.weeksLogged === 2) {
         var suggLines = budgetSuggestion.suggestions.map(function(s) {
           var tag = s.committed ? ' (committed)' : '';
@@ -273,30 +374,40 @@ function scheduleFridayDigest() {
           suggLines + '\n\nReply *suggest budgets* anytime to see this again.';
       }
 
-      await sendWhatsAppBroadcast(msg, getAllUsers);
-      console.log('Friday digest sent');
-    } catch (err) { console.error('Friday digest failed:', err.message); }
-  }, { timezone: 'UTC' });
-  console.log('Friday digest ready (7 PM IST)');
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function getTopDiscretionaryCategory(byCategory) {
-  var disc = Object.entries(byCategory || {})
-    .filter(function(e) { return !isCommitted(e[0]); })
-    .sort(function(a, b) { return b[1] - a[1]; });
-  return disc.length > 0 ? { category: disc[0][0], amount: disc[0][1] } : null;
-}
-
-module.exports = { scheduleDailyNudge, scheduleOverspendCheck, scheduleFridayDigest, scheduleSmartNudge, scheduleEveningCheckIn, scheduleMorningFollowUp, scheduleLapseNudge, schedulePreStatementNudge, buildWeeklyDigest, buildWeeklyChartUrl, getTopDiscretionaryCategory };
-
-// ─── Evening check-in: 8 PM IST (14:30 UTC) ──────────────────────────────────
-function scheduleEveningCheckIn() {
-  cron.schedule('45 14 * * *', async function() {
-    try {
+      return msg;
+    }
+  },
+  {
+    id: 'overspend_alert',
+    description: 'Spending over baseline categories',
+    cadenceHours: 24,
+    windowStart: 20,   // 8 PM IST
+    windowEnd: 21,
+    priority: 9,
+    broadcast: true,
+    check: async function() {
+      var result = await getOverspendAlerts();
+      if (!result) return null;
+      var lines = result.alerts.map(function(a) {
+        return '  ' + getCategoryEmoji(a.category) + ' *' + a.category + '*: Rs.' +
+          a.spent.toLocaleString('en-IN') + ' vs Rs.' + a.baseline.toLocaleString('en-IN') +
+          ' avg (+' + a.pct + '%)';
+      }).join('\n');
+      return '*Spending Alert* (' + result.weeksOfData + ' weeks of data)\n\nOver baseline in:\n' +
+        lines + '\n\nSend *summary* for the full picture.';
+    }
+  },
+  {
+    id: 'evening_checkin',
+    description: 'End of day — logged anything today?',
+    cadenceHours: 24,
+    windowStart: 20,   // 8 PM IST
+    windowEnd: 21,
+    priority: 5,
+    check: async function() {
       var info = await getLastEntryInfo();
-      if (!info.hasEntries || info.daysAgo >= 7) return;
-      if (info.todayCount > 0) { console.log('Evening check-in skipped: logged today'); return; }
+      if (!info.hasEntries || info.daysAgo >= 7) return null;
+      if (info.todayCount > 0) return null;
       var msgs = [
         "Hey, anything to log from today? Even a quick auto ride counts.",
         "How'd the wallet do today? Takes 10 seconds — just type it out.",
@@ -305,89 +416,131 @@ function scheduleEveningCheckIn() {
         "Quick one — anything to track from today before it slips your mind?",
         "Today still blank. Worth a quick log before you call it a night?",
       ];
-      await sendWhatsAppBroadcast(msgs[Math.floor(Math.random() * msgs.length)], getAllUsers);
-      console.log('Evening check-in sent');
-    } catch (err) { console.error('Evening check-in failed:', err.message); }
-  }, { timezone: 'UTC' });
-  console.log('Evening check-in ready (8:15 PM IST)');
-}
+      return msgs[Math.floor(Math.random() * msgs.length)];
+    }
+  }
+];
 
-// ─── Morning follow-up: 9 AM IST (03:30 UTC) ─────────────────────────────────
-function scheduleMorningFollowUp() {
-  cron.schedule('40 3 * * *', async function() {
-    try {
-      var info = await getLastEntryInfo();
-      if (!info.hasEntries || info.daysAgo === 0) return;
-      if (info.yesterdayCount > 0) { console.log('Morning follow-up skipped: yesterday had entries'); return; }
-      if (info.daysAgo < 1 || info.daysAgo >= 3) return;
-      var msgs = [
-        "Morning! Yesterday's expenses are still missing — anything you remember? Even a rough total helps.",
-        "Yesterday's a blank in your tracker. Want to add anything before it fades completely?",
-        "Hey — nothing logged from yesterday. Drop me anything you remember and I'll sort it.",
-        "Quick morning check — yesterday still empty. Even one or two entries keeps the picture clear.",
-      ];
-      await sendWhatsAppBroadcast(msgs[Math.floor(Math.random() * msgs.length)], getAllUsers);
-      console.log('Morning follow-up sent');
-    } catch (err) { console.error('Morning follow-up failed:', err.message); }
-  }, { timezone: 'UTC' });
-  console.log('Morning follow-up ready (9:10 AM IST)');
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+// HEARTBEAT TICK — runs every 30 minutes, picks the most overdue check per user
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// ─── Lapse nudge: 10 AM IST (04:30 UTC), fires once at 3-day mark ────────────
-function scheduleLapseNudge() {
-  cron.schedule('30 4 * * *', async function() {
-    try {
-      var info = await getLastEntryInfo();
-      if (!info.hasEntries || info.daysAgo !== 3) return;
-      var msgs = [
-        "Hey, it's been a few days since your last log. No stress — even catching up on the big ones keeps the picture clear.",
-        "Three days without a log. Totally fine — life gets busy. Just type anything and we'll pick up from there.",
-        "Your spending story has a gap. No pressure to backfill everything — even one entry gets things moving again.",
-        "Been quiet for a few days! Any big spends worth adding? Otherwise just start fresh from today.",
-      ];
-      await sendWhatsAppBroadcast(msgs[Math.floor(Math.random() * msgs.length)], getAllUsers);
-      console.log('Lapse nudge sent (3 days of silence)');
-    } catch (err) { console.error('Lapse nudge failed:', err.message); }
-  }, { timezone: 'UTC' });
-  console.log('Lapse nudge ready (10 AM IST, fires at 3-day mark)');
-}
+async function heartbeatTick() {
+  const tickStart = Date.now();
+  console.log('[heartbeat] tick at ' + new Date().toISOString());
 
-// ─── Pre-statement nudge: 9 AM IST (03:30 UTC) daily ─────────────────────────
-// Fires 2 days before any user's CC statement generates
-function schedulePreStatementNudge() {
-  cron.schedule('50 3 * * *', async function() {
-    try {
-      const users = await getAllUsers();
-      const today = new Date();
-      const targetDate = new Date(today);
-      targetDate.setDate(today.getDate() + 2);
-      const targetDay = targetDate.getDate();
+  try {
+    const users = await getAllUsers();
+    if (!users || users.length === 0) {
+      console.log('[heartbeat] no users, skipping');
+      return;
+    }
 
-      for (const user of users) {
-        if (!user.phone || !user.statementDates) continue;
-        const dates = user.statementDates;
+    // 1. Run broadcast checks first (send once to all users)
+    for (const nudge of NUDGE_CHECKS) {
+      if (!nudge.broadcast) continue;
+      if (!isInTimeWindow(nudge.windowStart, nudge.windowEnd)) continue;
+      if (nudge.dayOfWeek !== undefined && getISTDayOfWeek() !== nudge.dayOfWeek) continue;
 
-        for (const [card, day] of Object.entries(dates)) {
-          if (day !== targetDay) continue;
-          const daysIfWait = 50;
-          const daysIfNow = 20;
+      // Use first user phone as broadcast state key
+      const statePhone = '_broadcast';
+      const overdueHrs = getOverdueHours(nudge.id, statePhone, nudge.cadenceHours);
+      if (overdueHrs < 0) continue;
 
-          const msgs = [
-            'Heads up — your ' + card + ' statement generates in 2 days (on the ' + day + 'th).\n\nIf you have a big purchase coming up, waiting till after the ' + day + 'th gives you ~' + daysIfWait + ' interest-free days instead of ~' + daysIfNow + '.',
-            'Your ' + card + ' billing cycle closes in 2 days.\n\nPlanning a big purchase? Waiting till after the ' + day + 'th maximises your interest-free window to ~' + daysIfWait + ' days.',
-            card + ' statement in 2 days. Any large spend planned? Hold off till the ' + (day + 1) + 'th and you get the full ~' + daysIfWait + '-day interest-free period.',
-          ];
-          const msg = msgs[Math.floor(Math.random() * msgs.length)];
-
-          try {
-            await sendWhatsAppTo(user.phone, msg);
-            console.log('Pre-statement nudge sent to ' + user.phone + ' for ' + card);
-          } catch (err) {
-            console.error('Pre-statement nudge failed for ' + user.phone + ':', err.message);
+      try {
+        const msg = await nudge.check(null, users);
+        if (msg) {
+          for (const user of users) {
+            if (!user.phone) continue;
+            try {
+              await sendWhatsAppTo(user.phone, msg);
+            } catch (err) {
+              console.error('[heartbeat] ' + nudge.id + ' send failed for ' + user.phone + ':', err.message);
+            }
           }
+          markSent(nudge.id, statePhone);
+          console.log('[heartbeat] ' + nudge.id + ' broadcast sent');
+        }
+      } catch (err) {
+        console.error('[heartbeat] ' + nudge.id + ' check failed:', err.message);
+      }
+    }
+
+    // 2. Per-user checks — pick the single most overdue nudge for each user
+    const perUserChecks = NUDGE_CHECKS.filter(function(n) { return !n.broadcast; });
+
+    for (const user of users) {
+      if (!user.phone) continue;
+
+      // Find eligible checks: in time window, day matches, overdue
+      var bestNudge = null;
+      var bestOverdue = -Infinity;
+
+      for (const nudge of perUserChecks) {
+        if (!isInTimeWindow(nudge.windowStart, nudge.windowEnd)) continue;
+        if (nudge.dayOfWeek !== undefined && getISTDayOfWeek() !== nudge.dayOfWeek) continue;
+
+        var overdueHrs = getOverdueHours(nudge.id, user.phone, nudge.cadenceHours);
+        if (overdueHrs < 0) continue;
+
+        // Score: overdue hours * priority weight
+        var score = overdueHrs * nudge.priority;
+        if (score > bestOverdue) {
+          bestOverdue = score;
+          bestNudge = nudge;
         }
       }
-    } catch (err) { console.error('Pre-statement nudge failed:', err.message); }
-  }, { timezone: 'UTC' });
-  console.log('Pre-statement nudge ready (9:20 AM IST, fires 2 days before each CC statement)');
+
+      if (!bestNudge) continue;
+
+      try {
+        var msg = await bestNudge.check(user);
+        if (msg) {
+          await sendWhatsAppTo(user.phone, msg);
+          markSent(bestNudge.id, user.phone);
+          console.log('[heartbeat] ' + bestNudge.id + ' sent to ' + user.phone);
+        } else {
+          // Check returned null (not actionable) — mark as checked so we don't
+          // keep re-evaluating it every 30 min. Use shorter cooldown.
+          markSent(bestNudge.id, user.phone);
+        }
+      } catch (err) {
+        console.error('[heartbeat] ' + bestNudge.id + ' failed for ' + user.phone + ':', err.message);
+      }
+    }
+  } catch (err) {
+    console.error('[heartbeat] tick failed:', err.message);
+  }
+
+  const elapsed = Date.now() - tickStart;
+  console.log('[heartbeat] tick done in ' + elapsed + 'ms');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCHEDULER — single entry point replaces all individual schedule* functions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function scheduleHeartbeat() {
+  // Run every 30 minutes
+  cron.schedule('*/30 * * * *', heartbeatTick, { timezone: 'UTC' });
+  console.log('[heartbeat] Scheduled — ticking every 30 min');
+  console.log('[heartbeat] ' + NUDGE_CHECKS.length + ' checks registered:');
+  NUDGE_CHECKS.forEach(function(n) {
+    console.log('  ' + n.id + ' — ' + n.description + ' (every ' + n.cadenceHours + 'h, ' + n.windowStart + '-' + n.windowEnd + ' IST, priority ' + n.priority + ')');
+  });
+}
+
+module.exports = {
+  scheduleHeartbeat,
+  // Pure functions still used by server.js
+  buildWeeklyDigest,
+  buildWeeklyChartUrl,
+  getTopDiscretionaryCategory,
+  buildSmartNudgeForUser,
+  // Exposed for testing
+  heartbeatTick,
+  heartbeatState,
+  NUDGE_CHECKS,
+  isInTimeWindow,
+  getOverdueHours
+};
