@@ -489,19 +489,18 @@ async function undoLast() {
 // ─── Cycle pace analysis ──────────────────────────────────────────────────────
 // Returns how spending compares to expected pace at this point in the cycle
 
-async function getCyclePaceAnalysis() {
-  const rows = await getAllRows();
+async function getCyclePaceAnalysis(phone) {
+  const rows = await getAllRows(phone);
   const now = new Date();
   const { cycleStart, cycleEnd } = getSalaryCycleBounds(now);
 
-  // Days elapsed and total days in cycle
   const totalCycleDays = Math.round((cycleEnd - cycleStart) / (1000 * 60 * 60 * 24));
   const daysElapsed = Math.round((now - cycleStart) / (1000 * 60 * 60 * 24));
   const daysUntilPayday = Math.round((cycleEnd - now) / (1000 * 60 * 60 * 24)) + 1;
   const cycleProgress = daysElapsed / totalCycleDays; // 0 to 1
 
-  // Current cycle spend (discretionary only — committed is fixed)
-  const { byCategory, total } = buildCategoryTotals(rows,
+  // Current cycle discretionary spend
+  const { byCategory } = buildCategoryTotals(rows,
     d => d && d >= cycleStart && d <= now
   );
 
@@ -514,61 +513,85 @@ async function getCyclePaceAnalysis() {
     }
   }
 
-  // Get previous cycle's discretionary spend as baseline
-  // Find previous cycle bounds
+  // ── Projection (always available after a few days) ──
+  const dailyRate = daysElapsed > 0 ? discretionaryTotal / daysElapsed : 0;
+  const projectedTotal = Math.round(dailyRate * totalCycleDays);
+
+  // Top spending categories by current daily rate
+  const topCategories = Object.entries(discretionaryByCategory)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([cat, amt]) => ({
+      cat,
+      amt: Math.round(amt),
+      daily: daysElapsed > 0 ? Math.round(amt / daysElapsed) : 0
+    }));
+
+  const projection = {
+    dailyRate: Math.round(dailyRate),
+    projectedTotal,
+    topCategories
+  };
+
+  // ── Comparison (needs reliable baseline from previous cycle) ──
   const prevCycleEnd = new Date(cycleStart);
   prevCycleEnd.setDate(prevCycleEnd.getDate() - 1);
   const prevCycleStart = getSalaryCycleBounds(prevCycleEnd).cycleStart;
 
-  const { total: prevTotal, byCategory: prevByCategory } = buildCategoryTotals(rows,
+  const { byCategory: prevByCategory } = buildCategoryTotals(rows,
     d => d && d >= prevCycleStart && d <= prevCycleEnd
   );
 
   let prevDiscretionary = 0;
-  let prevEntryCount = 0;
+  let prevCatCount = 0;
   for (const [cat, amt] of Object.entries(prevByCategory)) {
     if (!isCommitted(cat)) {
       prevDiscretionary += amt;
-      prevEntryCount++;
+      prevCatCount++;
     }
   }
 
-  // Need a meaningful previous cycle: non-zero spend AND at least 5 discretionary categories logged
-  // Otherwise the baseline is too thin to compare against
-  if (prevDiscretionary === 0 || prevEntryCount < 3 || prevDiscretionary < 2000) {
-    return { ready: false, reason: 'insufficient_prev_data', daysElapsed, cycleProgress: Math.round(cycleProgress * 100) };
+  // Baseline quality check: need 3+ categories and Rs.2000+ total
+  const comparisonReady = prevDiscretionary >= 2000 && prevCatCount >= 3;
+
+  let comparison = null;
+  if (comparisonReady) {
+    const baselineMonthly = prevDiscretionary;
+    const baselineDaily = Math.round(baselineMonthly / totalCycleDays);
+    const expectedByNow = baselineMonthly * cycleProgress;
+    const paceRatio = expectedByNow > 0 ? discretionaryTotal / expectedByNow : 1;
+
+    // Per-category comparison (only categories with Rs.2000+ baseline)
+    const hotCategories = Object.entries(discretionaryByCategory)
+      .map(([cat, amt]) => {
+        const prev = prevByCategory[cat] || 0;
+        if (prev < 2000) return null;
+        const prevDaily = prev / totalCycleDays;
+        const currentDaily = daysElapsed > 0 ? amt / daysElapsed : 0;
+        const over = prevDaily > 0 ? ((currentDaily - prevDaily) / prevDaily) * 100 : 0;
+        return { cat, amt: Math.round(amt), daily: Math.round(currentDaily), prevDaily: Math.round(prevDaily), over: Math.round(over) };
+      })
+      .filter(x => x !== null && x.over > 30)
+      .sort((a, b) => b.over - a.over)
+      .slice(0, 3);
+
+    comparison = {
+      baselineMonthly: Math.round(baselineMonthly),
+      baselineDaily,
+      paceRatio,
+      hotCategories
+    };
   }
 
-  const baselineMonthly = prevDiscretionary;
-  const expectedByNow = baselineMonthly * cycleProgress;
-  const paceRatio = expectedByNow > 0 ? discretionaryTotal / expectedByNow : 1;
-
-  // Top overspending categories vs previous cycle
-  // Only include categories where we have meaningful prev cycle data (>500 Rs)
-  const hotCategories = Object.entries(discretionaryByCategory)
-    .map(([cat, amt]) => {
-      const prev = prevByCategory[cat] || 0;
-      if (prev < 2000) return null; // skip categories with no meaningful baseline
-      const prevExpected = prev * cycleProgress;
-      const over = ((amt - prevExpected) / prevExpected) * 100;
-      return { cat, amt: Math.round(amt), over: Math.round(over) };
-    })
-    .filter(x => x !== null && x.over > 30)
-    .sort((a, b) => b.over - a.over)
-    .slice(0, 3);
-
   return {
-    ready: true,
     daysElapsed,
     daysUntilPayday,
     totalCycleDays,
     cycleProgress: Math.round(cycleProgress * 100),
     discretionaryTotal: Math.round(discretionaryTotal),
-    expectedByNow: Math.round(expectedByNow),
-    baselineMonthly: Math.round(baselineMonthly),
-    paceRatio,
-    hotCategories,
-    cycleLabel: getCycleLabel()
+    cycleLabel: getCycleLabel(),
+    projection,
+    comparison // null if baseline not reliable
   };
 }
 

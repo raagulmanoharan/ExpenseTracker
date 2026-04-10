@@ -129,66 +129,87 @@ function scheduleOverspendCheck() {
   console.log('Overspend check ready (8 PM IST)');
 }
 
+// ─── Smart nudge helper: build personalized message for one user ──────────────
+async function buildSmartNudgeForUser(phone) {
+  var pace = getCyclePaceAnalysis(phone);
+  if (pace.then) pace = await pace; // handle async
+
+  var proj = pace.projection;
+  var comp = pace.comparison;
+
+  // Need at least 25% through cycle (~8 days) for meaningful projection
+  if (pace.cycleProgress < 25) return null;
+  if (proj.dailyRate === 0) return null;
+
+  var daysUntilPayday = pace.daysUntilPayday;
+
+  // ── With comparison baseline ──
+  if (comp && comp.paceRatio <= 10) {
+    var paceRatio = comp.paceRatio;
+
+    if (paceRatio > 1.3 && daysUntilPayday > 10) {
+      var msg = 'Quick money check.\n\n' +
+        'You\'re spending Rs.' + proj.dailyRate.toLocaleString('en-IN') + '/day on discretionary stuff. ' +
+        'At this rate, you\'ll hit *Rs.' + proj.projectedTotal.toLocaleString('en-IN') + '* by payday.\n\n' +
+        'Last cycle was Rs.' + comp.baselineMonthly.toLocaleString('en-IN') + ' total (Rs.' + comp.baselineDaily.toLocaleString('en-IN') + '/day).';
+
+      if (comp.hotCategories.length > 0) {
+        msg += '\n\nBiggest movers:\n' + comp.hotCategories.map(function(h) {
+          return '  ' + getCategoryEmoji(h.cat) + ' ' + h.cat + ': Rs.' + h.daily.toLocaleString('en-IN') + '/day vs Rs.' + h.prevDaily.toLocaleString('en-IN') + ' last cycle';
+        }).join('\n');
+      }
+
+      msg += '\n\nPayday ' + (daysUntilPayday === 1 ? 'tomorrow' : 'in ' + daysUntilPayday + ' days') + '.';
+      return msg;
+
+    } else if (paceRatio < 0.9 && daysUntilPayday <= 5) {
+      var saved = Math.round(comp.baselineMonthly * (pace.cycleProgress / 100) - pace.discretionaryTotal);
+      return 'Nice work this cycle.\n\n' +
+        'Rs.' + proj.dailyRate.toLocaleString('en-IN') + '/day vs Rs.' + comp.baselineDaily.toLocaleString('en-IN') + ' last cycle. ' +
+        'You\'re roughly Rs.' + saved.toLocaleString('en-IN') + ' under your usual pace.\n\n' +
+        'Payday ' + (daysUntilPayday === 1 ? 'tomorrow' : 'in ' + daysUntilPayday + ' days') + '. Good time to sweep the surplus into investments.';
+
+    } else if (paceRatio > 1.15 && daysUntilPayday > 5) {
+      return 'Small heads up.\n\n' +
+        'Running at Rs.' + proj.dailyRate.toLocaleString('en-IN') + '/day vs Rs.' + comp.baselineDaily.toLocaleString('en-IN') + ' last cycle. ' +
+        'Projected *Rs.' + proj.projectedTotal.toLocaleString('en-IN') + '* by payday (last cycle: Rs.' + comp.baselineMonthly.toLocaleString('en-IN') + ').\n\n' +
+        'Nothing alarming — ' + daysUntilPayday + ' days to go.';
+    }
+  }
+
+  // ── No comparison — projection-only, send on Wednesdays ──
+  if (new Date().getDay() === 3) {
+    var topLine = proj.topCategories.length > 0
+      ? '\n\nTop categories:\n' + proj.topCategories.map(function(c) {
+          return '  ' + getCategoryEmoji(c.cat) + ' ' + c.cat + ': Rs.' + c.amt.toLocaleString('en-IN') + ' (Rs.' + c.daily.toLocaleString('en-IN') + '/day)';
+        }).join('\n')
+      : '';
+    return 'Midweek check-in.\n\n' +
+      'You\'re at Rs.' + pace.discretionaryTotal.toLocaleString('en-IN') + ' discretionary so far (' + pace.cycleProgress + '% through ' + pace.cycleLabel + ').\n' +
+      'At Rs.' + proj.dailyRate.toLocaleString('en-IN') + '/day, you\'ll land around *Rs.' + proj.projectedTotal.toLocaleString('en-IN') + '* by payday.' +
+      topLine;
+  }
+
+  return null;
+}
+
 // ─── Smart nudge: 9 AM IST (03:30 UTC) daily ─────────────────────────────────
 function scheduleSmartNudge() {
   cron.schedule('30 3 * * *', async function() {
     try {
-      var pace = await getCyclePaceAnalysis();
-
-      // Not enough data yet — need a complete previous cycle to baseline against
-      if (!pace.ready) {
-        console.log('Smart nudge skipped: ' + (pace.reason || 'not ready') + ' (' + pace.cycleProgress + '% through cycle)');
-        return;
-      }
-
-      var paceRatio = pace.paceRatio;
-      var daysUntilPayday = pace.daysUntilPayday;
-      var daysElapsed = pace.daysElapsed;
-
-      // Need at least 25% through the cycle (~8 days) for meaningful signal
-      if (pace.cycleProgress < 25) {
-        console.log('Smart nudge skipped: too early in cycle (' + pace.cycleProgress + '%)');
-        return;
-      }
-
-      var msg = null;
-
-      // Skip if pace ratio is absurdly high — means baseline data is too thin
-      if (paceRatio > 10) {
-        console.log('Smart nudge skipped: paceRatio ' + paceRatio.toFixed(1) + ' too extreme, baseline likely incomplete');
-        return;
-      }
-
-      if (paceRatio > 1.3 && daysUntilPayday > 10) {
-        var overpct = Math.round((paceRatio - 1) * 100);
-        var hotLines = pace.hotCategories.length > 0
-          ? '\n\nRunning hot in:\n' + pace.hotCategories.map(function(h) {
-              return '  ' + getCategoryEmoji(h.cat) + ' ' + h.cat + ': Rs.' +
-                h.amt.toLocaleString('en-IN') + ' (+' + h.over + '% vs last cycle)';
-            }).join('\n')
-          : '';
-        var daysMsg = daysUntilPayday === 1 ? 'tomorrow' : 'in ' + daysUntilPayday + ' days';
-        msg = 'Hey, quick money check.\n\nYou\'re spending ' + overpct +
-          '% faster than usual this cycle (' + pace.cycleProgress + '% through ' + pace.cycleLabel + ').' +
-          hotLines + '\n\nPayday is ' + daysMsg + '. Worth slowing down a bit?';
-
-      } else if (paceRatio < 0.9 && daysUntilPayday <= 5) {
-        var saved = Math.round(pace.baselineMonthly * (pace.cycleProgress / 100) - pace.discretionaryTotal);
-        var daysMsg2 = daysUntilPayday === 1 ? 'tomorrow' : 'in ' + daysUntilPayday + ' days';
-        msg = 'Nice work this cycle!\n\nYou\'ve spent Rs.' + pace.discretionaryTotal.toLocaleString('en-IN') +
-          ' discretionary vs your usual Rs.' + Math.round(pace.baselineMonthly * pace.cycleProgress / 100).toLocaleString('en-IN') +
-          ' by this point — roughly Rs.' + saved.toLocaleString('en-IN') + ' under pace.\n\n' +
-          'Payday ' + daysMsg2 + '. Good time to move that surplus to investments before lifestyle creep sneaks in.';
-
-      } else if (paceRatio > 1.15 && daysUntilPayday > 5) {
-        var mildPct = Math.round((paceRatio - 1) * 100);
-        msg = 'Small heads up — you\'re about ' + mildPct +
-          '% ahead of your usual spending pace with ' + daysUntilPayday + ' days until payday.\n\nNothing alarming yet, but worth keeping an eye on.';
-      }
-
-      if (msg) {
-        await sendWhatsAppBroadcast(msg, getAllUsers);
-        console.log('Smart nudge sent (paceRatio: ' + paceRatio.toFixed(2) + ')');
+      var users = await getAllUsers();
+      for (var u = 0; u < users.length; u++) {
+        var user = users[u];
+        if (!user.phone) continue;
+        try {
+          var msg = await buildSmartNudgeForUser(user.phone);
+          if (msg) {
+            await sendWhatsAppTo(user.phone, msg);
+            console.log('Smart nudge sent to ' + user.phone);
+          }
+        } catch (userErr) {
+          console.error('Smart nudge failed for ' + user.phone + ':', userErr.message);
+        }
       }
     } catch (err) { console.error('Smart nudge failed:', err.message); }
   }, { timezone: 'UTC' });
