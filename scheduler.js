@@ -153,6 +153,12 @@ function scheduleSmartNudge() {
 
       var msg = null;
 
+      // Skip if pace ratio is absurdly high — means baseline data is too thin
+      if (paceRatio > 10) {
+        console.log('Smart nudge skipped: paceRatio ' + paceRatio.toFixed(1) + ' too extreme, baseline likely incomplete');
+        return;
+      }
+
       if (paceRatio > 1.3 && daysUntilPayday > 10) {
         var overpct = Math.round((paceRatio - 1) * 100);
         var hotLines = pace.hotCategories.length > 0

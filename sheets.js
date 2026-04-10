@@ -525,13 +525,18 @@ async function getCyclePaceAnalysis() {
   );
 
   let prevDiscretionary = 0;
+  let prevEntryCount = 0;
   for (const [cat, amt] of Object.entries(prevByCategory)) {
-    if (!isCommitted(cat)) prevDiscretionary += amt;
+    if (!isCommitted(cat)) {
+      prevDiscretionary += amt;
+      prevEntryCount++;
+    }
   }
 
-  // No previous cycle data = not enough to make a comparison
-  if (prevDiscretionary === 0) {
-    return { ready: false, reason: 'no_prev_cycle', daysElapsed, cycleProgress: Math.round(cycleProgress * 100) };
+  // Need a meaningful previous cycle: non-zero spend AND at least 5 discretionary categories logged
+  // Otherwise the baseline is too thin to compare against
+  if (prevDiscretionary === 0 || prevEntryCount < 3 || prevDiscretionary < 2000) {
+    return { ready: false, reason: 'insufficient_prev_data', daysElapsed, cycleProgress: Math.round(cycleProgress * 100) };
   }
 
   const baselineMonthly = prevDiscretionary;
@@ -543,7 +548,7 @@ async function getCyclePaceAnalysis() {
   const hotCategories = Object.entries(discretionaryByCategory)
     .map(([cat, amt]) => {
       const prev = prevByCategory[cat] || 0;
-      if (prev < 500) return null; // skip categories with no meaningful baseline
+      if (prev < 2000) return null; // skip categories with no meaningful baseline
       const prevExpected = prev * cycleProgress;
       const over = ((amt - prevExpected) / prevExpected) * 100;
       return { cat, amt: Math.round(amt), over: Math.round(over) };
