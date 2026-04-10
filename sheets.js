@@ -1,19 +1,11 @@
 const { google } = require('googleapis');
+const { isCommitted, parseIndianDate, getCategoryEmoji } = require('./constants');
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = 'Expenses';
 const BUDGET_SHEET = 'Budgets';
-const HEADERS = ['Date', 'Time', 'Amount (₹)', 'Category', 'Merchant', 'Note', 'Raw Message'];
+const HEADERS = ['Date', 'Time', 'Amount (₹)', 'Category', 'Merchant', 'Note', 'Raw Message', 'Phone'];
 const BUDGET_HEADERS = ['Category', 'Monthly Budget (₹)'];
-
-// ─── Committed vs Discretionary ───────────────────────────────────────────────
-const COMMITTED_CATEGORIES = new Set([
-  'Rent', 'Loan EMI', 'Investments', 'Family Transfer', 'Utilities', 'Subscriptions', 'Credit Card Payment'
-]);
-
-function isCommitted(category) {
-  return COMMITTED_CATEGORIES.has(category);
-}
 
 // ─── Salary cycle (Salesforce India 2026 pay schedule) ───────────────────────
 // Cycles run from pay date → day before next pay date
@@ -33,11 +25,16 @@ const PAY_DATES_2026 = [
   new Date('2026-12-29'),
 ];
 
-function getSalaryCycleBounds(referenceDate) {
+function getSalaryCycleBounds(referenceDate, userConfig) {
   const d = referenceDate || new Date();
   const today = new Date(d.getFullYear(), d.getMonth(), d.getDate()); // strip time
 
-  // Find the most recent pay date on or before today
+  // Dynamic cycle from user's salary config
+  if (userConfig && userConfig.salaryType) {
+    return computeUserCycleBounds(today, userConfig);
+  }
+
+  // Default: use hardcoded PAY_DATES_2026
   let cycleStart = null;
   for (let i = PAY_DATES_2026.length - 1; i >= 0; i--) {
     if (PAY_DATES_2026[i] <= today) {
@@ -46,21 +43,70 @@ function getSalaryCycleBounds(referenceDate) {
     }
   }
 
-  // Find the next pay date after cycleStart
   let cycleEnd = null;
   for (let i = 0; i < PAY_DATES_2026.length; i++) {
     if (PAY_DATES_2026[i] > (cycleStart || today)) {
-      // Cycle ends the day before the next pay date
       cycleEnd = new Date(PAY_DATES_2026[i]);
       cycleEnd.setDate(cycleEnd.getDate() - 1);
       break;
     }
   }
 
-  // Fallbacks for dates outside the 2026 schedule
   if (!cycleStart) cycleStart = new Date(today.getFullYear(), today.getMonth(), 1);
   if (!cycleEnd) {
-    cycleEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0); // end of month
+    cycleEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  }
+
+  cycleEnd.setHours(23, 59, 59, 999);
+  return { cycleStart, cycleEnd };
+}
+
+// Compute cycle bounds from user's salary type/day
+function computeUserCycleBounds(today, config) {
+  let cycleStart, cycleEnd;
+
+  if (config.salaryType === 'fixed' && config.salaryDay) {
+    const day = config.salaryDay;
+    if (today.getDate() >= day) {
+      cycleStart = new Date(today.getFullYear(), today.getMonth(), day);
+      cycleEnd = new Date(today.getFullYear(), today.getMonth() + 1, day - 1);
+    } else {
+      cycleStart = new Date(today.getFullYear(), today.getMonth() - 1, day);
+      cycleEnd = new Date(today.getFullYear(), today.getMonth(), day - 1);
+    }
+  } else if (config.salaryType === 'last') {
+    const lastDayThisMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+    if (today.getDate() >= lastDayThisMonth) {
+      cycleStart = new Date(today.getFullYear(), today.getMonth() + 1, 0); // last day this month
+      cycleEnd = new Date(today.getFullYear(), today.getMonth() + 2, 0); // last day next month
+      cycleEnd.setDate(cycleEnd.getDate() - 1);
+    } else {
+      cycleStart = new Date(today.getFullYear(), today.getMonth(), 0); // last day prev month
+      cycleEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0); // last day this month
+      cycleEnd.setDate(cycleEnd.getDate() - 1);
+    }
+  } else if (config.salaryType === 'last_working') {
+    // Approximate: last weekday of the month
+    const getLastWeekday = (year, month) => {
+      const last = new Date(year, month + 1, 0);
+      while (last.getDay() === 0 || last.getDay() === 6) last.setDate(last.getDate() - 1);
+      return last;
+    };
+    const lwdThisMonth = getLastWeekday(today.getFullYear(), today.getMonth());
+    if (today >= lwdThisMonth) {
+      cycleStart = new Date(lwdThisMonth);
+      const lwdNext = getLastWeekday(today.getFullYear(), today.getMonth() + 1);
+      cycleEnd = new Date(lwdNext);
+      cycleEnd.setDate(cycleEnd.getDate() - 1);
+    } else {
+      cycleStart = getLastWeekday(today.getFullYear(), today.getMonth() - 1);
+      cycleEnd = new Date(lwdThisMonth);
+      cycleEnd.setDate(cycleEnd.getDate() - 1);
+    }
+  } else {
+    // Unknown type, fall back to calendar month
+    cycleStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    cycleEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
   }
 
   cycleEnd.setHours(23, 59, 59, 999);
@@ -73,15 +119,16 @@ function getCycleLabel() {
   return fmt(cycleStart) + ' – ' + fmt(cycleEnd);
 }
 
-// ─── Auth ─────────────────────────────────────────────────────────────────────
-function getAuth() {
-  const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-  return new google.auth.GoogleAuth({ credentials, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
-}
+// ─── Auth (singleton) ────────────────────────────────────────────────────────
+let _sheetsClient = null;
 
 async function getSheetsClient() {
-  const auth = await getAuth();
-  return google.sheets({ version: 'v4', auth });
+  if (!_sheetsClient) {
+    const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+    const auth = new google.auth.GoogleAuth({ credentials, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+    _sheetsClient = google.sheets({ version: 'v4', auth });
+  }
+  return _sheetsClient;
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -89,10 +136,10 @@ async function initSheet() {
   const sheets = await getSheetsClient();
 
   // Expenses sheet
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A1:G1` });
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A1:H1` });
   if (!res.data.values?.[0] || res.data.values[0][0] !== 'Date') {
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A1:G1`,
+      spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A1:H1`,
       valueInputOption: 'RAW', requestBody: { values: [HEADERS] }
     });
     console.log('✅ Expenses sheet headers initialised');
@@ -115,36 +162,51 @@ async function initSheet() {
 }
 
 // ─── Expenses ─────────────────────────────────────────────────────────────────
-async function appendExpense({ amount, category, merchant, note, raw }) {
+async function appendExpense({ amount, category, merchant, note, raw, phone }) {
   const sheets = await getSheetsClient();
   const now = new Date();
   const date = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
   const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
   await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:G`,
+    spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:H`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [[date, time, amount, category, merchant || '', note || '', raw]] }
+    requestBody: { values: [[date, time, amount, category, merchant || '', note || '', raw, phone || '']] }
   });
+  invalidateRowsCache();
 }
 
-async function batchAppendExpenses(transactions) {
+async function batchAppendExpenses(transactions, phone) {
   const sheets = await getSheetsClient();
   const rows = transactions.map(tx => {
     const d = new Date(tx.date);
     const date = d.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    return [date, 'imported', tx.amount, tx.category, tx.merchant || '', tx.note || '', '[PDF import]'];
+    return [date, 'imported', tx.amount, tx.category, tx.merchant || '', tx.note || '', '[PDF import]', phone || ''];
   });
   await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:G`,
+    spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:H`,
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: rows }
   });
+  invalidateRowsCache();
 }
 
-async function getAllRows() {
-  const sheets = await getSheetsClient();
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:G` });
-  return (res.data.values || []).slice(1);
+// Row cache with short TTL to avoid repeated Sheets API calls within a request
+let _rowsCache = null;
+let _rowsCacheTime = 0;
+const ROWS_CACHE_TTL = 5000; // 5 seconds
+
+function invalidateRowsCache() { _rowsCache = null; _rowsCacheTime = 0; }
+
+async function getAllRows(phone) {
+  const now = Date.now();
+  if (!_rowsCache || (now - _rowsCacheTime) >= ROWS_CACHE_TTL) {
+    const sheets = await getSheetsClient();
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:H` });
+    _rowsCache = (res.data.values || []).slice(1);
+    _rowsCacheTime = now;
+  }
+  if (phone) return _rowsCache.filter(r => r[7] === phone);
+  return _rowsCache;
 }
 
 // ─── Budgets ──────────────────────────────────────────────────────────────────
@@ -214,12 +276,6 @@ async function suggestBudgets() {
 }
 
 // ─── Summary helpers ──────────────────────────────────────────────────────────
-function parseIndianDate(dateStr) {
-  const parts = dateStr.split('/');
-  if (parts.length !== 3) return null;
-  return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
-}
-
 function buildCategoryTotals(rows, filterFn) {
   const byCategory = {};
   let total = 0;
@@ -292,14 +348,15 @@ async function getBudgetStatus() {
   const [budgets, rows] = await Promise.all([getBudgets(), getAllRows()]);
   if (Object.keys(budgets).length === 0) return null;
 
+  const { cycleStart, cycleEnd } = getSalaryCycleBounds();
   const now = new Date();
   const { byCategory } = buildCategoryTotals(rows,
-    d => d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()
+    d => d && d >= cycleStart && d <= cycleEnd
   );
 
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const dayOfMonth = now.getDate();
-  const monthProgress = dayOfMonth / daysInMonth;
+  const totalCycleDays = Math.round((cycleEnd - cycleStart) / (1000 * 60 * 60 * 24));
+  const daysElapsed = Math.round((now - cycleStart) / (1000 * 60 * 60 * 24));
+  const monthProgress = totalCycleDays > 0 ? daysElapsed / totalCycleDays : 0;
 
   const lines = [];
   for (const [cat, budget] of Object.entries(budgets)) {
@@ -414,7 +471,7 @@ function getISOWeek(d) {
 // ─── Undo ─────────────────────────────────────────────────────────────────────
 async function undoLast() {
   const sheets = await getSheetsClient();
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:G` });
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:H` });
   const rows = res.data.values || [];
   if (rows.length <= 1) throw new Error('No expenses to undo');
   const lastRow = rows[rows.length - 1];
@@ -425,19 +482,8 @@ async function undoLast() {
     spreadsheetId: SHEET_ID,
     requestBody: { requests: [{ deleteDimension: { range: { sheetId: sheet.properties.sheetId, dimension: 'ROWS', startIndex: lastRowIndex - 1, endIndex: lastRowIndex } } }] }
   });
+  invalidateRowsCache();
   return { amount: lastRow[2], category: lastRow[3], merchant: lastRow[4] };
-}
-
-// ─── Emoji map ────────────────────────────────────────────────────────────────
-function getCategoryEmoji(category) {
-  const map = {
-    'Food & Dining': '🍽️', 'Food Delivery': '🛵', 'Groceries': '🛒',
-    'Transport': '🚗', 'Shopping': '🛍️', 'Entertainment': '🎬',
-    'Health & Fitness': '💊', 'Utilities': '💡', 'Rent': '🏠',
-    'Travel': '✈️', 'Personal Care': '💆', 'Subscriptions': '📱',
-    'Family Transfer': '👨‍👩‍👧', 'Investments': '📈', 'Loan EMI': '🏦', 'Credit Card Payment': '💳', 'Other': '📦'
-  };
-  return map[category] || '💸';
 }
 
 // ─── Cycle pace analysis ──────────────────────────────────────────────────────
@@ -563,14 +609,15 @@ module.exports = {
   parseSalaryInput, parseStatementInput, getDaysUntilStatement, getBillingCycleAdvice, editLastExpense, deleteRowByIndex, bulkRecategorize, initSheet, appendExpense, batchAppendExpenses, getAllRows,
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
   getBudgets, suggestBudgets, getBudgetStatus,
-  checkAnomaly, undoLast, getCategoryEmoji,
-  buildDiscretionarySplit
+  checkAnomaly, undoLast,
+  buildDiscretionarySplit,
+  getSalaryCycleBounds, computeUserCycleBounds
 };
 
 // ─── Edit last expense ────────────────────────────────────────────────────────
 async function editLastExpense(field, value) {
   const sheets = await getSheetsClient();
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:G` });
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:H` });
   const rows = res.data.values || [];
   if (rows.length <= 1) throw new Error('No expenses to edit');
 
@@ -592,9 +639,16 @@ async function editLastExpense(field, value) {
 // ─── Delete specific row by 1-based data index ────────────────────────────────
 async function deleteRowByIndex(dataIndex) {
   const sheets = await getSheetsClient();
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:H` });
+  const rows = res.data.values || [];
+
+  // Validate bounds — dataIndex is 1-based (row 1 of data = sheet row 2)
+  if (!Number.isInteger(dataIndex) || dataIndex < 1 || dataIndex >= rows.length) {
+    throw new Error('Invalid row index: ' + dataIndex + ' (valid range: 1-' + (rows.length - 1) + ')');
+  }
+
   const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
   const sheet = meta.data.sheets.find(s => s.properties.title === SHEET_NAME);
-  const sheetRowIndex = dataIndex; // data index 1 = sheet row 2 (row 1 is header)
 
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SHEET_ID,
@@ -604,13 +658,14 @@ async function deleteRowByIndex(dataIndex) {
           range: {
             sheetId: sheet.properties.sheetId,
             dimension: 'ROWS',
-            startIndex: sheetRowIndex, // 0-based: row 2 = index 1
-            endIndex: sheetRowIndex + 1
+            startIndex: dataIndex,
+            endIndex: dataIndex + 1
           }
         }
       }]
     }
   });
+  invalidateRowsCache();
 }
 
 // ─── Bulk recategorise ────────────────────────────────────────────────────────

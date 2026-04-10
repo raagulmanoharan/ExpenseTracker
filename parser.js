@@ -1,14 +1,8 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const axios = require('axios');
+const { CATEGORIES, safeParseJSON } = require('./constants');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-const CATEGORIES = [
-  'Food & Dining', 'Food Delivery', 'Groceries', 'Transport', 'Shopping',
-  'Entertainment', 'Health & Fitness', 'Utilities', 'Rent', 'Travel',
-  'Personal Care', 'Subscriptions', 'Family Transfer', 'Investments', 'Loan EMI',
-  'Credit Card Payment', 'Other'
-];
 
 const SYSTEM_PROMPT = `You are a smart expense parser for a WhatsApp expense tracker called Moolah, used by someone in India.
 Parse messages, receipts, bank SMS screenshots and return ONLY a JSON object — no markdown, no explanation.
@@ -84,11 +78,6 @@ async function parseExpenseFromImage(mediaUrl, mediaType, caption) {
 function resolveMediaType(t) {
   const map = { 'image/jpg': 'image/jpeg', 'image/jpeg': 'image/jpeg', 'image/png': 'image/png', 'image/gif': 'image/gif', 'image/webp': 'image/webp' };
   return map[t] || 'image/jpeg';
-}
-
-function safeParseJSON(text) {
-  try { return JSON.parse(text.trim()); }
-  catch { return JSON.parse(text.trim().replace(/```json|```/g, '').trim()); }
 }
 
 module.exports = { parseExpense, parseExpenseFromImage, CATEGORIES };

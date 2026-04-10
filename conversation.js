@@ -1,8 +1,16 @@
 const Anthropic = require('@anthropic-ai/sdk');
+const { safeParseJSON } = require('./constants');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const SYSTEM_PROMPT = `You are a personal finance assistant embedded in a WhatsApp expense tracker for Raagul, based in Bangalore/Hyderabad, India.
+function buildSystemPrompt(user) {
+  const name = user?.name || 'the user';
+  const cards = user?.statementDates ? Object.keys(user.statementDates) : [];
+  const cardContext = cards.length > 0
+    ? '\nCONTEXT:\n- Cards: ' + cards.join(', ') + '\n- CRED is used to pay credit card bills — always "Credit Card Payment"'
+    : '\nCONTEXT:\n- CRED is used to pay credit card bills — always "Credit Card Payment"';
+
+  return `You are a personal finance assistant embedded in a WhatsApp expense tracker for ${name}, based in India.
 
 You have access to the user's expense data and can answer questions and perform actions.
 
@@ -30,7 +38,7 @@ Food & Dining, Food Delivery, Groceries, Transport, Shopping, Entertainment, Hea
 
 RULES FOR RECATEGORISING "OTHER":
 - CRED, BillDesk, credit card bill payments → "Credit Card Payment"
-- UPI transfers to person names (MANOHARAN R, ADITHEE S etc) → "Family Transfer"
+- UPI transfers to person names → "Family Transfer"
 - Zerodha, Groww, mutual fund → "Investments"
 - Loan EMI payments → "Loan EMI"
 - Only leave as "Other" if genuinely uncategorisable
@@ -39,15 +47,11 @@ PERSONALITY:
 - Friendly, direct, no fluff
 - Indian number formatting (₹1,20,000)
 - Keep replies short — this is WhatsApp
-
-CONTEXT:
-- ICICI: UPI payments, family transfers, investments
-- HSBC Credit Card: daily driver
-- AMEX, Swiggy HDFC, Axis: other cards
-- CRED is used to pay credit card bills — always "Credit Card Payment"
+${cardContext}
 `;
+}
 
-async function handleConversation(message, expenseData) {
+async function handleConversation(message, expenseData, user) {
   const recentData = expenseData.slice(-200);
   const dataContext = JSON.stringify(recentData.map((row, i) => ({
     index: i + 1,
@@ -63,7 +67,7 @@ async function handleConversation(message, expenseData) {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 1000,
-      system: SYSTEM_PROMPT,
+      system: buildSystemPrompt(user),
       messages: [{
         role: 'user',
         content: `Expense data (most recent last):\n${dataContext}\n\nUser message: "${message}"`
@@ -71,11 +75,7 @@ async function handleConversation(message, expenseData) {
     });
 
     const raw = response.content[0].text.trim();
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return JSON.parse(raw.replace(/```json|```/g, '').trim());
-    }
+    return safeParseJSON(raw);
   } catch (err) {
     console.error('Conversation handler error:', err.message);
     return { type: 'unknown', text: "Sorry, I couldn't process that. Try being more specific, like \"fix the CRED entries\" or \"how much did I spend on food this month?\"" };

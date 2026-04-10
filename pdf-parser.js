@@ -1,29 +1,18 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const axios = require('axios');
+const { CATEGORIES, safeParseJSON, parseIndianDate } = require('./constants');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const BANK_CONTEXT = `
-The user has these accounts:
-- ICICI Savings: Used for UPI payments, sending money to parents, loan EMIs, investment auto-debits. Log EVERYTHING that goes out.
-- HSBC Savings: Salary account. Log all outflows — transfers, merchant payments, anything debited.
-- HSBC Credit Card: Daily driver for expenses. Log ALL purchases/debits. Skip refunds, cashbacks, credits.
-- AMEX Credit Card: Regular spends. Log ALL debits. Skip refunds and credits.
-- Swiggy HDFC Credit Card: Swiggy and Instamart spends. Log ALL debits. Skip refunds.
-- Axis Credit Card: Subscriptions and occasional spends. Log ALL debits. Skip refunds.
-`;
+function buildPdfSystemPrompt(user) {
+  const cards = user?.statementDates ? Object.keys(user.statementDates) : [];
+  const cardContext = cards.length > 0
+    ? '\nThe user has these cards: ' + cards.join(', ') + '. Log ALL debit transactions. Skip refunds, cashbacks, credits.\n'
+    : '';
 
-const CATEGORIES = [
-  'Food & Dining', 'Food Delivery', 'Groceries', 'Transport', 'Shopping',
-  'Entertainment', 'Health & Fitness', 'Utilities', 'Rent', 'Travel',
-  'Personal Care', 'Subscriptions', 'Family Transfer', 'Investments', 'Loan EMI', 'Credit Card Payment', 'Other'
-];
-
-const PDF_SYSTEM_PROMPT = `You are a bank statement parser for someone based in India.
+  return `You are a bank statement parser for someone based in India.
 Extract ALL debit/outflow transactions from the statement and return ONLY a JSON array.
-
-${BANK_CONTEXT}
-
+${cardContext}
 RULES:
 - Log EVERY rupee that goes out — merchant spends, UPI transfers, family support, EMIs, SIPs, investments, insurance
 - Only skip: credits, refunds, cashbacks, salary inflows, interest earned, payment reversals, and self-transfers between the user's own accounts
@@ -54,8 +43,9 @@ Return format — ONLY valid JSON, nothing else:
 ]
 
 If no transactions found, return: []`;
+}
 
-async function parsePDFStatement(mediaUrl) {
+async function parsePDFStatement(mediaUrl, user) {
   const pdfResponse = await axios.get(mediaUrl, {
     responseType: 'arraybuffer',
     auth: {
@@ -69,7 +59,7 @@ async function parsePDFStatement(mediaUrl) {
   const response = await client.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 4000,
-    system: PDF_SYSTEM_PROMPT,
+    system: buildPdfSystemPrompt(user),
     messages: [{
       role: 'user',
       content: [
@@ -86,11 +76,8 @@ async function parsePDFStatement(mediaUrl) {
   });
 
   const raw = response.content[0].text.trim();
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return JSON.parse(raw.replace(/```json|```/g, '').trim());
-  }
+  const parsed = safeParseJSON(raw);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 // Match by exact amount + date within ±1 day
@@ -133,10 +120,4 @@ function deduplicateTransactions(parsed, existingRows) {
   return { toAdd, duplicates };
 }
 
-function parseIndianDate(dateStr) {
-  const parts = dateStr.split('/');
-  if (parts.length !== 3) return null;
-  return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
-}
-
-module.exports = { parsePDFStatement, deduplicateTransactions, CATEGORIES };
+module.exports = { parsePDFStatement, deduplicateTransactions };

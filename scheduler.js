@@ -1,33 +1,16 @@
 const cron = require('node-cron');
-const twilio = require('twilio');
+const { getCategoryEmoji, isCommitted, getMonthName } = require('./constants');
 const {
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
-  getBudgetStatus, suggestBudgets, getCategoryEmoji,
+  getBudgetStatus, suggestBudgets,
   getCyclePaceAnalysis,
-  getLastEntryInfo
+  getLastEntryInfo,
+  getAllUsers
 } = require('./sheets');
-
-const FROM = process.env.TWILIO_WHATSAPP_FROM;
-const TO   = process.env.YOUR_WHATSAPP_NUMBER;
-
-// ─── Send text ────────────────────────────────────────────────────────────────
-async function sendWhatsApp(body) {
-  if (!FROM || !TO) { console.warn('Twilio FROM/TO not configured'); return; }
-  const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-  await client.messages.create({ from: FROM, to: TO, body });
-}
-
-// ─── Send image (chart via QuickChart) ───────────────────────────────────────
-async function sendWhatsAppImage(mediaUrl, caption) {
-  if (!FROM || !TO) return;
-  const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-  await client.messages.create({ from: FROM, to: TO, mediaUrl: [mediaUrl], body: caption || '' });
-}
+const { sendWhatsAppTo, sendWhatsAppBroadcast, sendWhatsAppImageBroadcast } = require('./messaging');
 
 // ─── Build QuickChart horizontal bar chart URL ────────────────────────────────
 function buildWeeklyChartUrl(byCategory, dateRange) {
-  const COMMITTED = new Set(['Rent', 'Loan EMI', 'Investments', 'Family Transfer', 'Utilities', 'Subscriptions', 'Credit Card Payment']);
-
   const sorted = Object.entries(byCategory)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8);
@@ -37,7 +20,7 @@ function buildWeeklyChartUrl(byCategory, dateRange) {
   });
   const data   = sorted.map(function(entry) { return Math.round(entry[1]); });
   const colors = sorted.map(function(entry) {
-    return COMMITTED.has(entry[0]) ? 'rgba(100,149,237,0.85)' : 'rgba(32,178,170,0.85)';
+    return isCommitted(entry[0]) ? 'rgba(100,149,237,0.85)' : 'rgba(32,178,170,0.85)';
   });
 
   const config = {
@@ -73,6 +56,36 @@ function buildWeeklyChartUrl(byCategory, dateRange) {
   return 'https://quickchart.io/chart?c=' + encodeURIComponent(JSON.stringify(config)) + '&w=600&h=360&bkg=white';
 }
 
+// ─── Build weekly digest (text + chart URL) ─────────────────────────────────
+async function buildWeeklyDigest() {
+  const weekly = await getWeeklySummary();
+
+  const now = new Date();
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() - now.getDay());
+  const dateRange =
+    weekStart.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) +
+    ' - ' +
+    now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+
+  const text =
+    '*Weekly Digest — ' + dateRange + '*\n\n' +
+    '*This week: ₹' + weekly.total + '* (' + weekly.count + ' transactions)\n' +
+    weekly.breakdown + '\n' +
+    weekly.discretionarySplit;
+
+  let chartUrl = null;
+  if (Object.keys(weekly.byCategory).length > 0) {
+    try {
+      chartUrl = buildWeeklyChartUrl(weekly.byCategory, dateRange);
+    } catch (err) {
+      console.error('Chart URL build failed:', err.message);
+    }
+  }
+
+  return { text, chartUrl };
+}
+
 // ─── Daily nudge: random 12–9 PM IST (06:30 UTC trigger) ─────────────────────
 function scheduleDailyNudge() {
   cron.schedule('30 6 * * *', async function() {
@@ -87,7 +100,7 @@ function scheduleDailyNudge() {
           "Any receipts piling up? Send them over!",
           "End of day check — any expenses from today to track?"
         ];
-        await sendWhatsApp(nudges[Math.floor(Math.random() * nudges.length)]);
+        await sendWhatsAppBroadcast(nudges[Math.floor(Math.random() * nudges.length)], getAllUsers);
         console.log('Daily nudge sent');
       } catch (err) { console.error('Nudge failed:', err.message); }
     }, delayMs);
@@ -106,9 +119,10 @@ function scheduleOverspendCheck() {
           a.spent.toLocaleString('en-IN') + ' vs Rs.' + a.baseline.toLocaleString('en-IN') +
           ' avg (+' + a.pct + '%)';
       }).join('\n');
-      await sendWhatsApp(
+      await sendWhatsAppBroadcast(
         '*Spending Alert* (' + result.weeksOfData + ' weeks of data)\n\nOver baseline in:\n' +
-        lines + '\n\nSend *summary* for the full picture.'
+        lines + '\n\nSend *summary* for the full picture.',
+        getAllUsers
       );
     } catch (err) { console.error('Overspend check failed:', err.message); }
   }, { timezone: 'UTC' });
@@ -167,7 +181,7 @@ function scheduleSmartNudge() {
       }
 
       if (msg) {
-        await sendWhatsApp(msg);
+        await sendWhatsAppBroadcast(msg, getAllUsers);
         console.log('Smart nudge sent (paceRatio: ' + paceRatio.toFixed(2) + ')');
       }
     } catch (err) { console.error('Smart nudge failed:', err.message); }
@@ -195,7 +209,7 @@ function scheduleFridayDigest() {
       if (Object.keys(weekly.byCategory).length > 0) {
         try {
           var chartUrl = buildWeeklyChartUrl(weekly.byCategory, dateRange);
-          await sendWhatsAppImage(chartUrl, '');
+          await sendWhatsAppImageBroadcast(chartUrl, '', getAllUsers);
           console.log('Chart sent');
         } catch (chartErr) {
           console.error('Chart failed, skipping:', chartErr.message);
@@ -232,7 +246,7 @@ function scheduleFridayDigest() {
           suggLines + '\n\nReply *suggest budgets* anytime to see this again.';
       }
 
-      await sendWhatsApp(msg);
+      await sendWhatsAppBroadcast(msg, getAllUsers);
       console.log('Friday digest sent');
     } catch (err) { console.error('Friday digest failed:', err.message); }
   }, { timezone: 'UTC' });
@@ -241,22 +255,17 @@ function scheduleFridayDigest() {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getTopDiscretionaryCategory(byCategory) {
-  var COMMITTED = new Set(['Rent', 'Loan EMI', 'Investments', 'Family Transfer', 'Utilities', 'Subscriptions', 'Credit Card Payment']);
   var disc = Object.entries(byCategory || {})
-    .filter(function(e) { return !COMMITTED.has(e[0]); })
+    .filter(function(e) { return !isCommitted(e[0]); })
     .sort(function(a, b) { return b[1] - a[1]; });
   return disc.length > 0 ? { category: disc[0][0], amount: disc[0][1] } : null;
 }
 
-function getMonthName() {
-  return new Date().toLocaleString('en-IN', { month: 'long' });
-}
-
-module.exports = { scheduleDailyNudge, scheduleOverspendCheck, scheduleFridayDigest, scheduleSmartNudge, scheduleEveningCheckIn, scheduleMorningFollowUp, scheduleLapseNudge, schedulePreStatementNudge, sendWhatsApp };
+module.exports = { scheduleDailyNudge, scheduleOverspendCheck, scheduleFridayDigest, scheduleSmartNudge, scheduleEveningCheckIn, scheduleMorningFollowUp, scheduleLapseNudge, schedulePreStatementNudge, buildWeeklyDigest, buildWeeklyChartUrl, getTopDiscretionaryCategory };
 
 // ─── Evening check-in: 8 PM IST (14:30 UTC) ──────────────────────────────────
 function scheduleEveningCheckIn() {
-  cron.schedule('30 14 * * *', async function() {
+  cron.schedule('45 14 * * *', async function() {
     try {
       var info = await getLastEntryInfo();
       if (!info.hasEntries || info.daysAgo >= 7) return;
@@ -269,16 +278,16 @@ function scheduleEveningCheckIn() {
         "Quick one — anything to track from today before it slips your mind?",
         "Today still blank. Worth a quick log before you call it a night?",
       ];
-      await sendWhatsApp(msgs[Math.floor(Math.random() * msgs.length)]);
+      await sendWhatsAppBroadcast(msgs[Math.floor(Math.random() * msgs.length)], getAllUsers);
       console.log('Evening check-in sent');
     } catch (err) { console.error('Evening check-in failed:', err.message); }
   }, { timezone: 'UTC' });
-  console.log('Evening check-in ready (8 PM IST)');
+  console.log('Evening check-in ready (8:15 PM IST)');
 }
 
 // ─── Morning follow-up: 9 AM IST (03:30 UTC) ─────────────────────────────────
 function scheduleMorningFollowUp() {
-  cron.schedule('35 3 * * *', async function() {
+  cron.schedule('40 3 * * *', async function() {
     try {
       var info = await getLastEntryInfo();
       if (!info.hasEntries || info.daysAgo === 0) return;
@@ -290,11 +299,11 @@ function scheduleMorningFollowUp() {
         "Hey — nothing logged from yesterday. Drop me anything you remember and I'll sort it.",
         "Quick morning check — yesterday still empty. Even one or two entries keeps the picture clear.",
       ];
-      await sendWhatsApp(msgs[Math.floor(Math.random() * msgs.length)]);
+      await sendWhatsAppBroadcast(msgs[Math.floor(Math.random() * msgs.length)], getAllUsers);
       console.log('Morning follow-up sent');
     } catch (err) { console.error('Morning follow-up failed:', err.message); }
   }, { timezone: 'UTC' });
-  console.log('Morning follow-up ready (9 AM IST)');
+  console.log('Morning follow-up ready (9:10 AM IST)');
 }
 
 // ─── Lapse nudge: 10 AM IST (04:30 UTC), fires once at 3-day mark ────────────
@@ -309,7 +318,7 @@ function scheduleLapseNudge() {
         "Your spending story has a gap. No pressure to backfill everything — even one entry gets things moving again.",
         "Been quiet for a few days! Any big spends worth adding? Otherwise just start fresh from today.",
       ];
-      await sendWhatsApp(msgs[Math.floor(Math.random() * msgs.length)]);
+      await sendWhatsAppBroadcast(msgs[Math.floor(Math.random() * msgs.length)], getAllUsers);
       console.log('Lapse nudge sent (3 days of silence)');
     } catch (err) { console.error('Lapse nudge failed:', err.message); }
   }, { timezone: 'UTC' });
@@ -319,12 +328,13 @@ function scheduleLapseNudge() {
 // ─── Pre-statement nudge: 9 AM IST (03:30 UTC) daily ─────────────────────────
 // Fires 2 days before any user's CC statement generates
 function schedulePreStatementNudge() {
-  cron.schedule('35 3 * * *', async function() {
+  cron.schedule('50 3 * * *', async function() {
     try {
-      const { getAllUsers } = require('./sheets');
       const users = await getAllUsers();
       const today = new Date();
-      const targetDay = today.getDate() + 2; // 2 days from now
+      const targetDate = new Date(today);
+      targetDate.setDate(today.getDate() + 2);
+      const targetDay = targetDate.getDate();
 
       for (const user of users) {
         if (!user.phone || !user.statementDates) continue;
@@ -332,10 +342,8 @@ function schedulePreStatementNudge() {
 
         for (const [card, day] of Object.entries(dates)) {
           if (day !== targetDay) continue;
-
-          // This user's statement generates in 2 days
-          const daysIfWait = 50; // approx max interest-free if they buy after
-          const daysIfNow = 20;  // approx days left if they buy today
+          const daysIfWait = 50;
+          const daysIfNow = 20;
 
           const msgs = [
             'Heads up — your ' + card + ' statement generates in 2 days (on the ' + day + 'th).\n\nIf you have a big purchase coming up, waiting till after the ' + day + 'th gives you ~' + daysIfWait + ' interest-free days instead of ~' + daysIfNow + '.',
@@ -344,14 +352,15 @@ function schedulePreStatementNudge() {
           ];
           const msg = msgs[Math.floor(Math.random() * msgs.length)];
 
-          // Send to this user's number
-          if (!FROM || !user.phone) continue;
-          const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-          await client.messages.create({ from: FROM, to: user.phone, body: msg });
-          console.log('Pre-statement nudge sent to ' + user.phone + ' for ' + card);
+          try {
+            await sendWhatsAppTo(user.phone, msg);
+            console.log('Pre-statement nudge sent to ' + user.phone + ' for ' + card);
+          } catch (err) {
+            console.error('Pre-statement nudge failed for ' + user.phone + ':', err.message);
+          }
         }
       }
     } catch (err) { console.error('Pre-statement nudge failed:', err.message); }
   }, { timezone: 'UTC' });
-  console.log('Pre-statement nudge ready (fires 2 days before each CC statement)');
+  console.log('Pre-statement nudge ready (9:20 AM IST, fires 2 days before each CC statement)');
 }

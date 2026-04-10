@@ -1,21 +1,23 @@
 require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
-const { parseExpense, parseExpenseFromImage, CATEGORIES } = require('./parser');
+const { CATEGORIES, getCategoryEmoji, getMonthName } = require('./constants');
+const { parseExpense, parseExpenseFromImage } = require('./parser');
 const { parsePDFStatement, deduplicateTransactions } = require('./pdf-parser');
 const {
   initSheet, appendExpense, batchAppendExpenses, getAllRows,
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
   getBudgets, suggestBudgets, getBudgetStatus,
-  checkAnomaly, undoLast, getCategoryEmoji, buildDiscretionarySplit, editLastExpense, deleteRowByIndex, bulkRecategorize,
+  checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteRowByIndex, bulkRecategorize,
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount,
   parseSalaryInput, parseStatementInput, getBillingCycleAdvice
 } = require('./sheets');
-const { scheduleDailyNudge, scheduleOverspendCheck, scheduleFridayDigest, scheduleSmartNudge, sendWhatsApp, sendWhatsAppImage, buildWeeklyDigest } = require('./scheduler');
+const { scheduleDailyNudge, scheduleOverspendCheck, scheduleFridayDigest, scheduleSmartNudge, scheduleEveningCheckIn, scheduleMorningFollowUp, scheduleLapseNudge, schedulePreStatementNudge, buildWeeklyDigest } = require('./scheduler');
+const { sendWhatsAppTo, sendWhatsAppImageTo } = require('./messaging');
 const { handleConversation } = require('./conversation');
 
 const app = express();
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
 app.use(express.json());
 
 const MessagingResponse = twilio.twiml.MessagingResponse;
@@ -27,23 +29,60 @@ const pendingOnboarding = new Map(); // new users being onboarded
 const pendingContextual = new Map(); // contextual questions (salary, card, statement)
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
+const startedAt = new Date();
+app.get('/health', (req, res) => {
+  const mem = process.memoryUsage();
+  res.json({
+    status: 'ok',
+    time: new Date().toISOString(),
+    uptime: Math.round(process.uptime()) + 's',
+    started: startedAt.toISOString(),
+    memory: {
+      rss: Math.round(mem.rss / 1024 / 1024) + 'MB',
+      heap: Math.round(mem.heapUsed / 1024 / 1024) + '/' + Math.round(mem.heapTotal / 1024 / 1024) + 'MB'
+    },
+    node: process.version
+  });
+});
+
+// ─── Twilio signature validation ─────────────────────────────────────────────
+function validateTwilioSignature(req, res, next) {
+  if (process.env.NODE_ENV === 'test') return next();
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!authToken) return next(); // skip if not configured
+  const signature = req.headers['x-twilio-signature'] || '';
+  const url = (process.env.WEBHOOK_URL || `${req.protocol}://${req.get('host')}`) + req.originalUrl;
+  const valid = twilio.validateRequest(authToken, signature, url, req.body);
+  if (!valid) {
+    console.warn(`[${new Date().toISOString()}] [WARN] [twilio] Invalid signature from ${req.ip}`);
+    return res.status(403).end();
+  }
+  next();
+}
 
 // ─── Webhook ──────────────────────────────────────────────────────────────────
-app.post('/webhook', async (req, res) => {
+app.post('/webhook', validateTwilioSignature, async (req, res) => {
   const twiml = new MessagingResponse();
-  const incomingMsg = (req.body.Body || '').trim();
+  const rawMsg = (req.body.Body || '').trim();
+  const incomingMsg = rawMsg.length > 2000 ? rawMsg.substring(0, 2000) : rawMsg;
   const from = req.body.From || 'unknown';
   const numMedia = parseInt(req.body.NumMedia || '0');
   const mediaUrl = req.body.MediaUrl0;
   const mediaType = (req.body.MediaContentType0 || '').toLowerCase();
+  let responseSent = false;
 
-  console.log(`[${new Date().toISOString()}] ${from} | ${mediaType || 'text'} | "${incomingMsg}"`);
+  function sendResponse() {
+    if (responseSent) return;
+    responseSent = true;
+    sendResponse();
+  }
+
+  console.log(`[${new Date().toISOString()}] ${from} | ${mediaType || 'text'} | "${incomingMsg.substring(0, 100)}"`);
 
   try {
 
     // ── 0. New user detection — onboarding ────────────────────────────────
-    const user = await getUser(from);
+    let user = await getUser(from);
 
     if (!user) {
       // Check if they already have expense data (existing user, just no profile yet)
@@ -51,6 +90,7 @@ app.post('/webhook', async (req, res) => {
       if (existingRows.length > 0) {
         // Silently create profile — they're already using the app
         await createUser(from, 'User');
+        user = await getUser(from);
         // Fall through to normal handling
       } else if (pendingOnboarding.has(from)) {
         const name = incomingMsg.trim();
@@ -61,11 +101,11 @@ app.post('/webhook', async (req, res) => {
         } else {
           twiml.message("What's your name? (just your first name is fine)");
         }
-        return res.type('text/xml').send(twiml.toString());
+        return sendResponse();
       } else {
         pendingOnboarding.set(from, true);
         twiml.message("Hey! I\'m Moolah — your personal expense tracker on WhatsApp.\n\nWhat\'s your name?");
-        return res.type('text/xml').send(twiml.toString());
+        return sendResponse();
       }
     }
 
@@ -84,7 +124,7 @@ app.post('/webhook', async (req, res) => {
         } else {
           twiml.message('Just reply with a number like "26", or "last" for end of month, or "last working day".');
         }
-        return res.type('text/xml').send(twiml.toString());
+        return sendResponse();
       }
 
       if (ctx.type === 'statement') {
@@ -107,7 +147,7 @@ app.post('/webhook', async (req, res) => {
         } else {
           twiml.message('Just reply with the date number, e.g. "5" or "HSBC 5, AMEX 12".');
         }
-        return res.type('text/xml').send(twiml.toString());
+        return sendResponse();
       }
 
       pendingContextual.delete(from);
@@ -125,24 +165,24 @@ app.post('/webhook', async (req, res) => {
       } else if (reply === 'no' || reply === 'cancel') {
         pendingImport.delete(from);
         twiml.message("👍 Import cancelled.");
-        return res.type('text/xml').send(twiml.toString());
+        return sendResponse();
       } else {
         const picks = reply.split(/[,\s]+/).map(n => parseInt(n)).filter(n => !isNaN(n));
         if (picks.length > 0) {
           selected = picks.map(i => toAdd[i - 1]).filter(Boolean);
         } else {
           twiml.message("Reply *yes* to add all, *no* to cancel, or pick specific ones like *1,3,5*");
-          return res.type('text/xml').send(twiml.toString());
+          return sendResponse();
         }
       }
 
       if (selected.length === 0) {
         pendingImport.delete(from);
         twiml.message("Nothing selected. Import cancelled.");
-        return res.type('text/xml').send(twiml.toString());
+        return sendResponse();
       }
 
-      await batchAppendExpenses(selected);
+      await batchAppendExpenses(selected, from);
       pendingImport.delete(from);
       const monthly = await getMonthlySummary();
       twiml.message(
@@ -150,7 +190,7 @@ app.post('/webhook', async (req, res) => {
         `📊 *${getMonthName()} so far: ₹${monthly.total}*\n${monthly.breakdown}` +
         monthly.discretionarySplit
       );
-      return res.type('text/xml').send(twiml.toString());
+      return sendResponse();
     }
 
     // ── 2. Category pick (low confidence) ────────────────────────────────
@@ -173,20 +213,20 @@ app.post('/webhook', async (req, res) => {
       } else {
         twiml.message(buildCategoryPrompt(pending));
       }
-      return res.type('text/xml').send(twiml.toString());
+      return sendResponse();
     }
 
     // ── 3. No content ─────────────────────────────────────────────────────
     if (!incomingMsg && numMedia === 0) {
       twiml.message(helpText());
-      return res.type('text/xml').send(twiml.toString());
+      return sendResponse();
     }
 
     // ── 4. PDF statement ──────────────────────────────────────────────────
     if (numMedia > 0 && mediaType === 'application/pdf') {
       twiml.message("📄 Got your statement! Analysing — give me a few seconds...");
-      res.type('text/xml').send(twiml.toString());
-      processPDFAsync(from, mediaUrl).catch(err => {
+      sendResponse();
+      processPDFAsync(from, mediaUrl, user).catch(err => {
         console.error('PDF error:', err);
         sendWhatsAppTo(from, "⚠️ Couldn't read that PDF. Try a different format.");
       });
@@ -198,7 +238,7 @@ app.post('/webhook', async (req, res) => {
       const result = await parseExpenseFromImage(mediaUrl, mediaType, incomingMsg);
       const reply = await handleExpenseResult(result, incomingMsg || '[image]', from);
       twiml.message(reply);
-      return res.type('text/xml').send(twiml.toString());
+      return sendResponse();
     }
 
     // ── 6. Text ───────────────────────────────────────────────────────────
@@ -216,7 +256,7 @@ app.post('/webhook', async (req, res) => {
         }).join('\n\n');
         twiml.message('💡 *Budget Suggestions* (' + suggestion.weeksLogged + ' weeks of data)\nSet 10% below your run-rate — a realistic starting point.\n\n' + lines + '\n\n🔒 = committed (harder to cut)');
       }
-      return res.type('text/xml').send(twiml.toString());
+      return sendResponse();
     }
 
     // Weekly summary — send chart image + text (two messages)
@@ -224,19 +264,19 @@ app.post('/webhook', async (req, res) => {
       const { text, chartUrl } = await buildWeeklyDigest();
       if (chartUrl) {
         twiml.message('Building your weekly chart...');
-        res.type('text/xml').send(twiml.toString());
+        sendResponse();
         // Send chart then text asynchronously
         setTimeout(async () => {
           try {
-            await sendWhatsAppImage(chartUrl, '', from);
+            await sendWhatsAppImageTo(from, chartUrl, '');
             await new Promise(function(r) { setTimeout(r, 1500); });
-            await sendWhatsApp(text, from);
+            await sendWhatsAppTo(from, text);
           } catch (err) { console.error('Weekly chart send failed:', err.message); }
         }, 500);
         return;
       } else {
         twiml.message(text);
-        return res.type('text/xml').send(twiml.toString());
+        return sendResponse();
       }
     }
 
@@ -248,12 +288,12 @@ app.post('/webhook', async (req, res) => {
     twiml.message('⚠️ Something went wrong. Try again!');
   }
 
-  res.type('text/xml').send(twiml.toString());
+  sendResponse();
 });
 
 // ─── PDF async ────────────────────────────────────────────────────────────────
-async function processPDFAsync(from, mediaUrl) {
-  const [allRows, parsed] = await Promise.all([getAllRows(), parsePDFStatement(mediaUrl)]);
+async function processPDFAsync(from, mediaUrl, user) {
+  const [allRows, parsed] = await Promise.all([getAllRows(from), parsePDFStatement(mediaUrl, user)]);
 
   if (!parsed || parsed.length === 0) {
     await sendWhatsAppTo(from, "📄 Parsed the statement — no new spendable transactions found.");
@@ -287,7 +327,7 @@ async function processPDFAsync(from, mediaUrl) {
 async function handleExpenseResult(result, raw, from) {
   if (result.type === 'expense') {
     const { amount, category, merchant, note, confidence } = result;
-    const pending = { amount, category, merchant, note, raw };
+    const pending = { amount, category, merchant, note, raw, phone: from };
 
     if (confidence < 60) {
       pendingCategory.set(from, pending);
@@ -427,8 +467,8 @@ async function handleExpenseResult(result, raw, from) {
 
   } else {
     // Conversational fallback — Claude reads expense data and answers naturally
-    const rows = await getAllRows();
-    const conv = await handleConversation(raw, rows);
+    const rows = await getAllRows(from);
+    const conv = await handleConversation(raw, rows, user);
 
     if (conv.type === 'answer') {
       return conv.text;
@@ -500,15 +540,6 @@ function helpText() {
     '• suggest budgets — after 2+ weeks of data\n' +
     '• undo — remove last entry'
   );
-}
-
-function getMonthName() {
-  return new Date().toLocaleString('en-IN', { month: 'long' });
-}
-
-async function sendWhatsAppTo(to, body) {
-  const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-  await twilioClient.messages.create({ from: process.env.TWILIO_WHATSAPP_FROM, to, body });
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
