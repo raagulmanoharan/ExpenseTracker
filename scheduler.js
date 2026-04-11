@@ -73,8 +73,8 @@ function buildWeeklyChartUrl(byCategory, dateRange) {
 }
 
 // ─── Build weekly digest (text + chart URL) ─────────────────────────────────
-async function buildWeeklyDigest() {
-  const weekly = await getWeeklySummary();
+async function buildWeeklyDigest(phone) {
+  const weekly = await getWeeklySummary(phone || null);
 
   const now = new Date();
   const weekStart = new Date(now);
@@ -283,7 +283,7 @@ const NUDGE_CHECKS = [
       buildVariables: function() { return {}; }
     },
     check: async function(user) {
-      var info = await getLastEntryInfo();
+      var info = await getLastEntryInfo(user.phone);
       if (!info.hasEntries || info.daysAgo === 0) return null;
       if (info.yesterdayCount > 0) return null;
       if (info.daysAgo < 1 || info.daysAgo >= 3) return null;
@@ -348,8 +348,8 @@ const NUDGE_CHECKS = [
       sidKey: 'lapse_nudge',
       buildVariables: function() { return {}; }
     },
-    check: async function() {
-      var info = await getLastEntryInfo();
+    check: async function(user) {
+      var info = await getLastEntryInfo(user ? user.phone : null);
       if (!info.hasEntries || info.daysAgo !== 3) return null;
       var msgs = [
         "Hey, it's been a few days since your last log. No stress — even catching up on the big ones keeps the picture clear.",
@@ -401,10 +401,10 @@ const NUDGE_CHECKS = [
         return { '1': chartUrl };
       }
     },
-    check: async function(user, allUsers) {
-      var weekly  = await getWeeklySummary();
-      var monthly = await getMonthlySummary();
-      var budgetSuggestion = await suggestBudgets();
+    check: async function(user, allUsers, phone) {
+      var weekly  = await getWeeklySummary(phone || null);
+      var monthly = await getMonthlySummary(phone || null);
+      var budgetSuggestion = await suggestBudgets(phone || null);
 
       var now = new Date();
       var weekStart = new Date(now);
@@ -471,8 +471,8 @@ const NUDGE_CHECKS = [
         return { '1': lines.map(function(l) { return l.replace(/\*/g, ''); }).join(', ') || 'some categories' };
       }
     },
-    check: async function() {
-      var result = await getOverspendAlerts();
+    check: async function(user, allUsers, phone) {
+      var result = await getOverspendAlerts(phone || null);
       if (!result) return null;
       var lines = result.alerts.map(function(a) {
         return '  ' + getCategoryEmoji(a.category) + ' *' + a.category + '*: Rs.' +
@@ -494,8 +494,8 @@ const NUDGE_CHECKS = [
       sidKey: 'evening_checkin',
       buildVariables: function() { return {}; }
     },
-    check: async function() {
-      var info = await getLastEntryInfo();
+    check: async function(user) {
+      var info = await getLastEntryInfo(user ? user.phone : null);
       if (!info.hasEntries || info.daysAgo >= 7) return null;
       if (info.todayCount > 0) return null;
       var msgs = [
@@ -579,7 +579,16 @@ async function heartbeatTick() {
       return;
     }
 
-    // 1. Run broadcast checks first (send once to all users)
+    // 1. Run broadcast checks — per household group (solo users = own group)
+    // Group users by householdId (null/empty = solo group keyed by phone)
+    const householdGroups = {};
+    for (const user of users) {
+      if (!user.phone) continue;
+      const key = user.householdId || ('solo:' + user.phone);
+      if (!householdGroups[key]) householdGroups[key] = [];
+      householdGroups[key].push(user);
+    }
+
     for (const nudge of NUDGE_CHECKS) {
       if (!nudge.broadcast) continue;
       if (!isInTimeWindow(nudge.windowStart, nudge.windowEnd)) continue;
@@ -590,26 +599,27 @@ async function heartbeatTick() {
       if (overdueHrs < 0) continue;
 
       try {
-        const result = await nudge.check(null, users);
-        const data = normaliseCheckResult(result);
-        if (data) {
+        let anySent = false;
+        for (const [groupKey, groupUsers] of Object.entries(householdGroups)) {
+          // Use the first member's phone for household-aware data fetching
+          const representativePhone = groupUsers[0].phone;
+          const result = await nudge.check(null, groupUsers, representativePhone);
+          const data = normaliseCheckResult(result);
+          if (!data) continue;
+
           // friday_digest: send chart image first
           if (nudge.id === 'friday_digest' && data.templateData && data.templateData.chartUrl) {
-            for (const user of users) {
-              if (!user.phone) continue;
+            for (const user of groupUsers) {
               try {
                 await sendChartToUser(nudge, user, data.templateData.chartUrl);
               } catch (err) {
                 console.error('[heartbeat] chart send failed for ' + user.phone + ':', err.message);
               }
             }
-            console.log('[heartbeat] Chart sent');
           }
 
-          // Send text message to all users
-          let anySent = false;
-          for (const user of users) {
-            if (!user.phone) continue;
+          // Send text message to all group members
+          for (const user of groupUsers) {
             try {
               var sent = await sendNudgeToUser(nudge, user, data);
               if (sent) anySent = true;
@@ -617,10 +627,10 @@ async function heartbeatTick() {
               console.error('[heartbeat] ' + nudge.id + ' send failed for ' + user.phone + ':', err.message);
             }
           }
-          if (anySent) {
-            markSent(nudge.id, statePhone);
-            console.log('[heartbeat] ' + nudge.id + ' broadcast sent');
-          }
+        }
+        if (anySent) {
+          markSent(nudge.id, statePhone);
+          console.log('[heartbeat] ' + nudge.id + ' broadcast sent');
         }
       } catch (err) {
         console.error('[heartbeat] ' + nudge.id + ' check failed:', err.message);

@@ -22,7 +22,7 @@ async function callWithRetry(fn, retries = 2) {
   }
 }
 
-const SYSTEM_PROMPT = `You are a smart expense parser for a WhatsApp expense tracker called Moolah, used by someone in India.
+const SYSTEM_PROMPT = `You are a smart expense parser for a WhatsApp expense tracker called Budgy, used by someone in India.
 Parse messages, receipts, bank SMS screenshots and return ONLY a JSON object — no markdown, no explanation.
 
 CATEGORIES:

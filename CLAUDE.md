@@ -19,11 +19,11 @@ in Google Sheets. Scheduled nudges remind users to log and provide spending insi
 | `conversation.js` | Claude AI conversational fallback. Builds dynamic system prompt from user profile (name, card dates). Handles questions about spending data. |
 | `parser.js` | Claude AI expense parser. Text -> `{amount, category, merchant, note, confidence}`. Low confidence triggers category picker. |
 | `pdf-parser.js` | Bank statement PDF parser via Claude vision. Deduplicates against existing rows before import. |
-| `constants.js` | Shared: CATEGORIES, COMMITTED_CATEGORIES, `isCommitted()`, `parseIndianDate()`, `safeParseJSON()`, `getCategoryEmoji()`. |
+| `constants.js` | Shared: CATEGORIES, COMMITTED_CATEGORIES, `isCommitted()`, `isSharedCategory()`, `parseIndianDate()`, `safeParseJSON()`, `getCategoryEmoji()`. |
 
 ### Heartbeat nudge system
 The heartbeat ticks every 30 minutes. On each tick:
-1. **Broadcast checks** run first (overspend alert, Friday digest) — sent once to all users
+1. **Broadcast checks** run first (overspend alert, Friday digest) — computed per household group, sent to each member
 2. **Per-user checks** — for each user, the single most overdue nudge (scored by `overdueHours * priority`) is evaluated. Only one nudge fires per user per tick.
 3. Checks return a message string (send it) or null (not actionable, mark as checked).
 4. State (`nudgeId:phone -> lastSentTimestamp`) persists to `.heartbeat-state.json`.
@@ -37,20 +37,31 @@ The heartbeat ticks every 30 minutes. On each tick:
 - **Row cache**: `getAllRows()` caches for 5 seconds, invalidated on writes. Phone-filtered when called with a phone param.
 - **Onboarding**: New users get name prompt -> profile creation. Existing users without profiles get silent auto-creation.
 
+### Household system
+Two or more users can form a household via share codes. Each user messages Budgy 1:1, but summaries and nudges reflect combined household spending for shared categories.
+
+- **HouseholdId**: Short code (e.g. `hh_a7k3`) stored on each member's Users row (column J).
+- **SharedCategories**: JSON array on each member (column K). Categories in this list are shared; others are personal.
+- **Cross-notifications**: When a member logs a shared-category expense, other members receive a notification.
+- **Summaries**: Show all your own expenses + other members' shared-category expenses.
+- **Commands**: `create household`, `join <code>`, `leave household`, `my household`, `add shared: <category>`, `remove shared: <category>`, `set shared categories`.
+- **Helper functions**: `getHouseholdRows(phone)` fetches the right rows; `getHouseholdMembers(phone)` returns member objects.
+
 ### Data model (Google Sheets)
 - **Expenses tab**: Date, Time, Amount, Category, Merchant, Note, Raw Message, Phone (A:H)
-- **Users tab**: Phone, Name, SalaryType, SalaryDay, StatementDates (JSON), ExpenseCount, CreatedAt
+- **Users tab**: Phone, Name, SalaryType, SalaryDay, Cards, StatementDates (JSON), Joined, ExpenseCount, LastMessageAt, HouseholdId, SharedCategories (A:K)
 - **Budgets tab**: Category, Monthly Budget
 
 ### Environment variables
 `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM`, `ANTHROPIC_API_KEY`, `GOOGLE_SHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `WEBHOOK_URL` (optional, for signature validation), `PORT` (default 3000).
 
 ### Testing
-Run: `npm test` (jest --forceExit). 69 tests across 4 suites.
+Run: `npm test` (jest --forceExit). Tests across 5 suites.
 - `test/constants.test.js` — utility functions
 - `test/sheets-pure.test.js` — salary parsing, cycle bounds, billing advice
 - `test/dedup.test.js` — PDF transaction deduplication
 - `test/heartbeat.test.js` — nudge registry, overdue scoring, state persistence
+- `test/household.test.js` — household helpers (isSharedCategory, generateHouseholdId)
 
 ### Git repo
 https://github.com/raagulmanoharan/ExpenseTracker

@@ -66,6 +66,7 @@ PERSONALITY:
 - Indian number formatting (₹1,20,000)
 - Keep replies short — this is WhatsApp
 ${cardContext}
+${user?.householdId ? '\nHOUSEHOLD:\n- This user is part of a household. Expense data includes shared expenses from all household members.\n- Each row has a Phone column — different phones may belong to different household members.' : ''}
 `;
 }
 

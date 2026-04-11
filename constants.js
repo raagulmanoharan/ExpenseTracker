@@ -50,10 +50,16 @@ function getCategoryEmoji(category) {
   return map[category] || '💸';
 }
 
+function isSharedCategory(category, sharedCategories) {
+  if (!sharedCategories || sharedCategories.length === 0) return false;
+  return sharedCategories.includes(category);
+}
+
 module.exports = {
   CATEGORIES,
   COMMITTED_CATEGORIES,
   isCommitted,
+  isSharedCategory,
   getMonthName,
   parseIndianDate,
   safeParseJSON,

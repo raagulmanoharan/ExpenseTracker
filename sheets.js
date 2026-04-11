@@ -225,8 +225,8 @@ async function getBudgets() {
 
 // suggestBudgets: needs at least 2 complete weeks of data
 // Suggests ~10% below average weekly spend * 4 for each discretionary category
-async function suggestBudgets() {
-  const rows = await getAllRows();
+async function suggestBudgets(phone) {
+  const rows = phone ? await getHouseholdRows(phone) : await getAllRows();
   const now = new Date();
 
   const byWeek = {};
@@ -311,8 +311,8 @@ function buildDiscretionarySplit(byCategory, total) {
   );
 }
 
-async function getMonthlySummary() {
-  const rows = await getAllRows();
+async function getMonthlySummary(phone) {
+  const rows = phone ? await getHouseholdRows(phone) : await getAllRows();
   const { cycleStart, cycleEnd } = getSalaryCycleBounds();
   const { byCategory, total, count } = buildCategoryTotals(rows,
     d => d && d >= cycleStart && d <= cycleEnd
@@ -327,8 +327,8 @@ async function getMonthlySummary() {
   };
 }
 
-async function getWeeklySummary() {
-  const rows = await getAllRows();
+async function getWeeklySummary(phone) {
+  const rows = phone ? await getHouseholdRows(phone) : await getAllRows();
   const now = new Date();
   const startOfWeek = new Date(now);
   startOfWeek.setDate(now.getDate() - now.getDay());
@@ -344,8 +344,8 @@ async function getWeeklySummary() {
 }
 
 // ─── Budget status ────────────────────────────────────────────────────────────
-async function getBudgetStatus() {
-  const [budgets, rows] = await Promise.all([getBudgets(), getAllRows()]);
+async function getBudgetStatus(phone) {
+  const [budgets, rows] = await Promise.all([getBudgets(), phone ? getHouseholdRows(phone) : getAllRows()]);
   if (Object.keys(budgets).length === 0) return null;
 
   const { cycleStart, cycleEnd } = getSalaryCycleBounds();
@@ -378,8 +378,8 @@ function buildProgressBar(pct) {
 }
 
 // ─── Anomaly detection ────────────────────────────────────────────────────────
-async function checkAnomaly(amount, category) {
-  const rows = await getAllRows();
+async function checkAnomaly(amount, category, phone) {
+  const rows = phone ? await getHouseholdRows(phone) : await getAllRows();
   const now = new Date();
 
   // Get past 60 days of transactions in this category (excluding today)
@@ -411,8 +411,8 @@ async function checkAnomaly(amount, category) {
 }
 
 // ─── Overspend (weekly baseline) ──────────────────────────────────────────────
-async function getOverspendAlerts() {
-  const rows = await getAllRows();
+async function getOverspendAlerts(phone) {
+  const rows = phone ? await getHouseholdRows(phone) : await getAllRows();
   const now = new Date();
   const byWeek = {};
 
@@ -469,18 +469,25 @@ function getISOWeek(d) {
 }
 
 // ─── Undo ─────────────────────────────────────────────────────────────────────
-async function undoLast() {
+async function undoLast(phone) {
   const sheets = await getSheetsClient();
   const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:H` });
   const rows = res.data.values || [];
   if (rows.length <= 1) throw new Error('No expenses to undo');
-  const lastRow = rows[rows.length - 1];
-  const lastRowIndex = rows.length;
+
+  // Find the last row belonging to this phone (or absolute last if no phone)
+  let targetIndex = -1;
+  for (let i = rows.length - 1; i >= 1; i--) {
+    if (!phone || rows[i][7] === phone) { targetIndex = i; break; }
+  }
+  if (targetIndex < 0) throw new Error('No expenses to undo');
+
+  const lastRow = rows[targetIndex];
   const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
   const sheet = meta.data.sheets.find(s => s.properties.title === SHEET_NAME);
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SHEET_ID,
-    requestBody: { requests: [{ deleteDimension: { range: { sheetId: sheet.properties.sheetId, dimension: 'ROWS', startIndex: lastRowIndex - 1, endIndex: lastRowIndex } } }] }
+    requestBody: { requests: [{ deleteDimension: { range: { sheetId: sheet.properties.sheetId, dimension: 'ROWS', startIndex: targetIndex, endIndex: targetIndex + 1 } } }] }
   });
   invalidateRowsCache();
   return { amount: lastRow[2], category: lastRow[3], merchant: lastRow[4] };
@@ -490,7 +497,7 @@ async function undoLast() {
 // Returns how spending compares to expected pace at this point in the cycle
 
 async function getCyclePaceAnalysis(phone) {
-  const rows = await getAllRows(phone);
+  const rows = await getHouseholdRows(phone);
   const now = new Date();
   const { cycleStart, cycleEnd } = getSalaryCycleBounds(now);
 
@@ -598,8 +605,8 @@ async function getCyclePaceAnalysis(phone) {
 // ─── Last entry info ─────────────────────────────────────────────────────────
 // Returns date of last logged entry and how many days ago it was
 
-async function getLastEntryInfo() {
-  const rows = await getAllRows();
+async function getLastEntryInfo(phone) {
+  const rows = phone ? await getHouseholdRows(phone) : await getAllRows();
   if (rows.length === 0) return { hasEntries: false, daysAgo: null, lastDate: null };
 
   // Find the most recent entry date
@@ -662,17 +669,27 @@ module.exports = {
   getBudgets, suggestBudgets, getBudgetStatus,
   checkAnomaly, undoLast,
   buildDiscretionarySplit,
-  getSalaryCycleBounds, computeUserCycleBounds
+  getSalaryCycleBounds, computeUserCycleBounds,
+  // Household
+  generateHouseholdId, getHouseholdPhones, getHouseholdMembers, getHouseholdRows,
+  createHousehold, joinHousehold, leaveHousehold, updateSharedCategories
 };
 
 // ─── Edit last expense ────────────────────────────────────────────────────────
-async function editLastExpense(field, value) {
+async function editLastExpense(field, value, phone) {
   const sheets = await getSheetsClient();
   const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:H` });
   const rows = res.data.values || [];
   if (rows.length <= 1) throw new Error('No expenses to edit');
 
-  const lastRowIndex = rows.length; // 1-based
+  // Find last row for this phone (or absolute last if no phone)
+  let targetIndex = -1;
+  for (let i = rows.length - 1; i >= 1; i--) {
+    if (!phone || rows[i][7] === phone) { targetIndex = i; break; }
+  }
+  if (targetIndex < 0) throw new Error('No expenses to edit');
+
+  const lastRowIndex = targetIndex + 1; // 1-based for sheet range
   const fieldMap = { amount: 'C', category: 'D', merchant: 'E', note: 'F' };
   const col = fieldMap[field];
   if (!col) throw new Error('Unknown field: ' + field);
@@ -740,10 +757,10 @@ async function bulkRecategorize(updates) {
 }
 
 // ─── Users tab ────────────────────────────────────────────────────────────────
-// Columns: Phone | Name | Salary Type | Salary Day | Cards JSON | Statement Dates JSON | Joined | Expense Count
+// Columns: Phone | Name | Salary Type | Salary Day | Cards JSON | Statement Dates JSON | Joined | Expense Count | Last Message At | Household Id | Shared Categories JSON
 
 const USERS_SHEET = 'Users';
-const USER_HEADERS = ['Phone', 'Name', 'Salary Type', 'Salary Day', 'Cards', 'Statement Dates', 'Joined', 'Expense Count', 'Last Message At'];
+const USER_HEADERS = ['Phone', 'Name', 'Salary Type', 'Salary Day', 'Cards', 'Statement Dates', 'Joined', 'Expense Count', 'Last Message At', 'Household Id', 'Shared Categories'];
 
 async function initUsersSheet() {
   const sheets = await getSheetsClient();
@@ -755,7 +772,7 @@ async function initUsersSheet() {
       requestBody: { requests: [{ addSheet: { properties: { title: USERS_SHEET } } }] }
     });
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A1:I1`,
+      spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A1:K1`,
       valueInputOption: 'RAW', requestBody: { values: [USER_HEADERS] }
     });
     console.log('Users sheet created');
@@ -765,7 +782,7 @@ async function initUsersSheet() {
 async function getUser(phone) {
   const sheets = await getSheetsClient();
   try {
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:I` });
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:K` });
     const rows = (res.data.values || []).slice(1);
     const row = rows.find(r => r[0] === phone);
     if (!row) return null;
@@ -778,7 +795,9 @@ async function getUser(phone) {
       statementDates: row[5] ? JSON.parse(row[5]) : {},  // {HSBC: 5, AMEX: 12}
       joined: row[6] || null,
       expenseCount: row[7] ? parseInt(row[7]) : 0,
-      lastMessageAt: row[8] || null
+      lastMessageAt: row[8] || null,
+      householdId: row[9] || null,
+      sharedCategories: row[10] ? JSON.parse(row[10]) : null
     };
   } catch { return null; }
 }
@@ -788,16 +807,16 @@ async function createUser(phone, name) {
   const now = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
   const nowISO = new Date().toISOString();
   await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:I`,
+    spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:K`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [[phone, name, '', '', '[]', '{}', now, 0, nowISO]] }
+    requestBody: { values: [[phone, name, '', '', '[]', '{}', now, 0, nowISO, '', '']] }
   });
-  return { phone, name, salaryType: null, salaryDay: null, cards: [], statementDates: {}, joined: now, expenseCount: 0, lastMessageAt: nowISO };
+  return { phone, name, salaryType: null, salaryDay: null, cards: [], statementDates: {}, joined: now, expenseCount: 0, lastMessageAt: nowISO, householdId: null, sharedCategories: null };
 }
 
 async function updateUser(phone, updates) {
   const sheets = await getSheetsClient();
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:I` });
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:K` });
   const rows = res.data.values || [];
   const rowIndex = rows.findIndex((r, i) => i > 0 && r[0] === phone);
   if (rowIndex < 0) return null;
@@ -812,12 +831,14 @@ async function updateUser(phone, updates) {
     updates.statementDates !== undefined ? JSON.stringify(updates.statementDates) : existing[5],
     existing[6],
     updates.expenseCount !== undefined ? updates.expenseCount : existing[7],
-    updates.lastMessageAt !== undefined ? updates.lastMessageAt : (existing[8] || '')
+    updates.lastMessageAt !== undefined ? updates.lastMessageAt : (existing[8] || ''),
+    updates.householdId !== undefined ? updates.householdId : (existing[9] || ''),
+    updates.sharedCategories !== undefined ? JSON.stringify(updates.sharedCategories) : (existing[10] || '')
   ];
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
-    range: `${USERS_SHEET}!A${rowIndex + 1}:I${rowIndex + 1}`,
+    range: `${USERS_SHEET}!A${rowIndex + 1}:K${rowIndex + 1}`,
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [merged] }
   });
@@ -834,7 +855,7 @@ async function incrementExpenseCount(phone) {
 async function getAllUsers() {
   const sheets = await getSheetsClient();
   try {
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:I` });
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${USERS_SHEET}!A:K` });
     const rows = (res.data.values || []).slice(1);
     return rows.filter(r => r[0]).map(row => ({
       phone: row[0],
@@ -845,9 +866,90 @@ async function getAllUsers() {
       statementDates: row[5] ? JSON.parse(row[5]) : {},
       joined: row[6] || null,
       expenseCount: row[7] ? parseInt(row[7]) : 0,
-      lastMessageAt: row[8] || null
+      lastMessageAt: row[8] || null,
+      householdId: row[9] || null,
+      sharedCategories: row[10] ? JSON.parse(row[10]) : null
     }));
   } catch { return []; }
+}
+
+// ─── Household functions ─────────────────────────────────────────────────────
+
+function generateHouseholdId() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let code = 'hh_';
+  for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+async function getHouseholdPhones(phone) {
+  const user = await getUser(phone);
+  if (!user || !user.householdId) return [phone];
+  const allUsers = await getAllUsers();
+  return allUsers
+    .filter(u => u.householdId === user.householdId)
+    .map(u => u.phone);
+}
+
+async function getHouseholdMembers(phone) {
+  const user = await getUser(phone);
+  if (!user || !user.householdId) return [user].filter(Boolean);
+  const allUsers = await getAllUsers();
+  return allUsers.filter(u => u.householdId === user.householdId);
+}
+
+async function getHouseholdRows(phone) {
+  const user = await getUser(phone);
+  if (!user || !user.householdId) return getAllRows(phone);
+
+  const members = await getHouseholdMembers(phone);
+  const sharedCategories = user.sharedCategories || [];
+  const memberPhones = new Set(members.map(m => m.phone));
+  const allRows = await getAllRows();
+
+  return allRows.filter(row => {
+    const rowPhone = row[7];
+    const rowCategory = row[3] || 'Other';
+    if (rowPhone === phone) return true; // all my expenses
+    if (memberPhones.has(rowPhone) && sharedCategories.includes(rowCategory)) return true; // others' shared
+    return false;
+  });
+}
+
+async function createHousehold(phone, sharedCategories) {
+  const user = await getUser(phone);
+  if (!user) return null;
+  if (user.householdId) return { existing: true, householdId: user.householdId };
+  const id = generateHouseholdId();
+  // Only write to user if categories are provided (i.e. setup is complete)
+  if (sharedCategories && sharedCategories.length > 0) {
+    await updateUser(phone, { householdId: id, sharedCategories });
+  }
+  return { householdId: id };
+}
+
+async function joinHousehold(phone, householdId) {
+  const allUsers = await getAllUsers();
+  const members = allUsers.filter(u => u.householdId === householdId);
+  if (members.length === 0) return { error: 'not_found' };
+  const sharedCategories = members[0].sharedCategories || [];
+  await updateUser(phone, { householdId, sharedCategories });
+  return { members: members.map(u => u.name || 'Unknown'), sharedCategories };
+}
+
+async function leaveHousehold(phone) {
+  await updateUser(phone, { householdId: '', sharedCategories: [] });
+  return { left: true };
+}
+
+async function updateSharedCategories(phone, categories) {
+  const user = await getUser(phone);
+  if (!user || !user.householdId) return null;
+  const members = await getHouseholdMembers(phone);
+  for (const member of members) {
+    await updateUser(member.phone, { sharedCategories: categories });
+  }
+  return { updated: true, categories };
 }
 
 // Parse salary input: "26", "last", "last working day", "28th"

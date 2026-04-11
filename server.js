@@ -11,7 +11,8 @@ const {
   checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteRowByIndex, bulkRecategorize,
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount,
   updateLastMessageAt,
-  parseSalaryInput, parseStatementInput, getBillingCycleAdvice
+  parseSalaryInput, parseStatementInput, getBillingCycleAdvice,
+  getHouseholdRows, getHouseholdMembers, createHousehold, joinHousehold, leaveHousehold, updateSharedCategories
 } = require('./sheets');
 const { scheduleHeartbeat, buildWeeklyDigest } = require('./scheduler');
 const { sendWhatsAppTo, sendWhatsAppImageTo } = require('./messaging');
@@ -28,6 +29,8 @@ const pendingCategory = new Map(); // low-confidence expense awaiting category p
 const pendingImport = new Map();   // PDF transactions awaiting confirmation
 const pendingOnboarding = new Map(); // new users being onboarded
 const pendingContextual = new Map(); // contextual questions (salary, card, statement)
+const pendingHouseholdSetup = new Map(); // awaiting shared category selection
+const pendingSharedCategoryReset = new Map(); // awaiting full shared category reset
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 const startedAt = new Date();
@@ -94,7 +97,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
 
     if (!user) {
       // Check if they already have expense data (existing user, just no profile yet)
-      const existingRows = await getAllRows();
+      const existingRows = await getAllRows(from);
       if (existingRows.length > 0) {
         // Silently create profile — they're already using the app
         await createUser(from, 'User');
@@ -112,7 +115,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
         return sendResponse();
       } else {
         pendingOnboarding.set(from, true);
-        twiml.message("Hey! I\'m Moolah — your personal expense tracker on WhatsApp.\n\nWhat\'s your name?");
+        twiml.message("Hey! I\'m Budgy — your personal expense tracker on WhatsApp.\n\nWhat\'s your name?");
         return sendResponse();
       }
     }
@@ -161,6 +164,196 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       pendingContextual.delete(from);
     }
 
+    // ── 0c. Household setup — shared category selection ──────────────────
+    if (pendingHouseholdSetup.has(from)) {
+      const { householdId } = pendingHouseholdSetup.get(from);
+      const picks = incomingMsg.split(/[,\s]+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= CATEGORIES.length);
+      if (picks.length > 0) {
+        const sharedCategories = [...new Set(picks.map(i => CATEGORIES[i - 1]))];
+        await updateUser(from, { householdId, sharedCategories });
+        pendingHouseholdSetup.delete(from);
+        twiml.message(
+          '✅ *Household created!*\n\n' +
+          '🔑 Code: *' + householdId + '*\n' +
+          'Share this with your family — they just send "join ' + householdId + '" to me.\n\n' +
+          '📂 *Shared categories:* ' + sharedCategories.join(', ') + '\n\n' +
+          'You can change these anytime with "add shared: Category" or "remove shared: Category".'
+        );
+      } else if (incomingMsg.toLowerCase() === 'cancel') {
+        pendingHouseholdSetup.delete(from);
+        twiml.message('Household setup cancelled.');
+      } else {
+        twiml.message('Reply with numbers like *1,3,5,8,9* to pick shared categories. Or "cancel" to abort.');
+      }
+      return sendResponse();
+    }
+
+    // ── 0d. Shared category reset — full re-pick ─────────────────────────
+    if (pendingSharedCategoryReset.has(from)) {
+      const picks = incomingMsg.split(/[,\s]+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= CATEGORIES.length);
+      if (picks.length > 0) {
+        const sharedCategories = [...new Set(picks.map(i => CATEGORIES[i - 1]))];
+        await updateSharedCategories(from, sharedCategories);
+        pendingSharedCategoryReset.delete(from);
+        twiml.message('✅ Shared categories updated: ' + sharedCategories.join(', '));
+      } else if (incomingMsg.toLowerCase() === 'cancel') {
+        pendingSharedCategoryReset.delete(from);
+        twiml.message('Cancelled.');
+      } else {
+        twiml.message('Reply with numbers like *1,3,5,8,9*. Or "cancel".');
+      }
+      return sendResponse();
+    }
+
+    // ── 0e. Household commands ───────────────────────────────────────────
+    const lower = incomingMsg.toLowerCase().trim();
+
+    if (lower === 'create household' || lower === 'create family') {
+      const existing = await getUser(from);
+      if (existing && existing.householdId) {
+        const members = await getHouseholdMembers(from);
+        const names = members.map(m => m.name || 'Unknown').join(', ');
+        twiml.message('You\'re already in a household (*' + existing.householdId + '*) with: ' + names + '\n\nSend "leave household" first if you want to create a new one.');
+        return sendResponse();
+      }
+      const result = await createHousehold(from, []);
+      pendingHouseholdSetup.set(from, { householdId: result.householdId });
+      const catList = CATEGORIES.map((c, i) => (i + 1) + '. ' + c).join('\n');
+      twiml.message(
+        '🏠 Setting up your household...\n\n' +
+        'Which categories should be *shared* with your family? Reply with numbers:\n\n' +
+        catList + '\n\n' +
+        'e.g. *1,2,3,8,9,15*'
+      );
+      return sendResponse();
+    }
+
+    if (lower.startsWith('join ')) {
+      const code = lower.replace('join ', '').trim();
+      if (!code.startsWith('hh_')) {
+        // Not a household code — fall through to normal parsing
+      } else {
+        const existing = await getUser(from);
+        if (existing && existing.householdId) {
+          twiml.message('You\'re already in a household (*' + existing.householdId + '*). Send "leave household" first.');
+          return sendResponse();
+        }
+        const result = await joinHousehold(from, code);
+        if (result.error === 'not_found') {
+          twiml.message('❌ Household code "' + code + '" not found. Check with your family for the right code.');
+          return sendResponse();
+        }
+        const sharedList = (result.sharedCategories || []).join(', ') || 'none set';
+        twiml.message(
+          '✅ *Joined household!*\n\n' +
+          '👨‍👩‍👧 Members: ' + result.members.join(', ') + ' & you\n' +
+          '📂 Shared categories: ' + sharedList + '\n\n' +
+          'Your summaries now include shared household expenses.'
+        );
+        // Notify existing members
+        const members = await getHouseholdMembers(from);
+        const joiner = await getUser(from);
+        const joinerName = (joiner && joiner.name) || 'Someone';
+        for (const member of members) {
+          if (member.phone === from) continue;
+          sendWhatsAppTo(member.phone, '👋 *' + joinerName + '* joined your household!').catch(() => {});
+        }
+        return sendResponse();
+      }
+    }
+
+    if (lower === 'leave household' || lower === 'leave family') {
+      const existing = await getUser(from);
+      if (!existing || !existing.householdId) {
+        twiml.message('You\'re not in a household.');
+        return sendResponse();
+      }
+      const members = await getHouseholdMembers(from);
+      const leaverName = (existing.name) || 'Someone';
+      await leaveHousehold(from);
+      twiml.message('👋 You\'ve left the household. Your summaries now show only your expenses.');
+      // Notify remaining members
+      for (const member of members) {
+        if (member.phone === from) continue;
+        sendWhatsAppTo(member.phone, '👋 *' + leaverName + '* left the household.').catch(() => {});
+      }
+      return sendResponse();
+    }
+
+    if (lower === 'my household' || lower === 'my family') {
+      const existing = await getUser(from);
+      if (!existing || !existing.householdId) {
+        twiml.message('You\'re not in a household yet.\n\nSend "create household" to start one, or "join <code>" to join an existing one.');
+        return sendResponse();
+      }
+      const members = await getHouseholdMembers(from);
+      const names = members.map(m => (m.name || 'Unknown') + (m.phone === from ? ' (you)' : '')).join('\n  ');
+      const sharedList = (existing.sharedCategories || []).join(', ') || 'none';
+      twiml.message(
+        '🏠 *Your Household*\n\n' +
+        '🔑 Code: *' + existing.householdId + '*\n' +
+        '👥 Members:\n  ' + names + '\n\n' +
+        '📂 Shared categories:\n  ' + sharedList + '\n\n' +
+        'Commands: "add shared: Category", "remove shared: Category", "set shared categories", "leave household"'
+      );
+      return sendResponse();
+    }
+
+    if (lower.startsWith('add shared:') || lower.startsWith('add shared ')) {
+      const input = incomingMsg.replace(/^add shared[:\s]+/i, '').trim();
+      const existing = await getUser(from);
+      if (!existing || !existing.householdId) {
+        twiml.message('You\'re not in a household. Send "create household" first.');
+        return sendResponse();
+      }
+      const match = CATEGORIES.find(c => c.toLowerCase().includes(input.toLowerCase()));
+      if (!match) {
+        twiml.message('Category not found. Available: ' + CATEGORIES.join(', '));
+        return sendResponse();
+      }
+      const current = existing.sharedCategories || [];
+      if (current.includes(match)) {
+        twiml.message(match + ' is already shared.');
+        return sendResponse();
+      }
+      await updateSharedCategories(from, [...current, match]);
+      twiml.message('✅ *' + match + '* is now a shared category.');
+      return sendResponse();
+    }
+
+    if (lower.startsWith('remove shared:') || lower.startsWith('remove shared ')) {
+      const input = incomingMsg.replace(/^remove shared[:\s]+/i, '').trim();
+      const existing = await getUser(from);
+      if (!existing || !existing.householdId) {
+        twiml.message('You\'re not in a household.');
+        return sendResponse();
+      }
+      const match = CATEGORIES.find(c => c.toLowerCase().includes(input.toLowerCase()));
+      if (!match) {
+        twiml.message('Category not found. Available: ' + CATEGORIES.join(', '));
+        return sendResponse();
+      }
+      const current = existing.sharedCategories || [];
+      if (!current.includes(match)) {
+        twiml.message(match + ' is already personal.');
+        return sendResponse();
+      }
+      await updateSharedCategories(from, current.filter(c => c !== match));
+      twiml.message('✅ *' + match + '* is now a personal category.');
+      return sendResponse();
+    }
+
+    if (lower === 'set shared categories' || lower === 'shared categories') {
+      const existing = await getUser(from);
+      if (!existing || !existing.householdId) {
+        twiml.message('You\'re not in a household. Send "create household" first.');
+        return sendResponse();
+      }
+      pendingSharedCategoryReset.set(from, true);
+      const catList = CATEGORIES.map((c, i) => (i + 1) + '. ' + c).join('\n');
+      twiml.message('Pick shared categories (reply with numbers):\n\n' + catList + '\n\ne.g. *1,2,3,8,9,15*');
+      return sendResponse();
+    }
 
     // ── 1. PDF import confirmation ────────────────────────────────────────
     if (pendingImport.has(from)) {
@@ -192,7 +385,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
 
       await batchAppendExpenses(selected, from);
       pendingImport.delete(from);
-      const monthly = await getMonthlySummary();
+      const monthly = await getMonthlySummary(from);
       twiml.message(
         `✅ *${selected.length} transaction${selected.length > 1 ? 's' : ''} imported!*\n\n` +
         `📊 *${getMonthName()} so far: ₹${monthly.total}*\n${monthly.breakdown}` +
@@ -210,8 +403,8 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
         pending.category = CATEGORIES[choice - 1];
         pendingCategory.delete(from);
         await appendExpense(pending);
-        const monthly = await getMonthlySummary();
-        const overspend = await getOverspendAlerts();
+        const monthly = await getMonthlySummary(from);
+        const overspend = await getOverspendAlerts(from);
         let reply = buildLoggedReply(pending, monthly);
         if (overspend) reply += formatOverspendAlert(overspend);
         twiml.message(reply);
@@ -244,7 +437,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     // ── 5. Image ──────────────────────────────────────────────────────────
     if (numMedia > 0 && mediaUrl) {
       const result = await parseExpenseFromImage(mediaUrl, mediaType, incomingMsg);
-      const reply = await handleExpenseResult(result, incomingMsg || '[image]', from);
+      const reply = await handleExpenseResult(result, incomingMsg || '[image]', from, user);
       twiml.message(reply);
       return sendResponse();
     }
@@ -254,7 +447,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
 
     // Budget suggestions (after 2+ weeks of data)
     if (result.type === 'suggest_budgets') {
-      const suggestion = await suggestBudgets();
+      const suggestion = await suggestBudgets(from);
       if (!suggestion.ready) {
         twiml.message('📊 Not enough data yet — need at least 2 full weeks.\n\nYou have ' + suggestion.weeksLogged + ' complete week(s) logged. Keep going!');
       } else {
@@ -269,7 +462,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
 
     // Weekly summary — send chart image + text (two messages)
     if (result.type === 'summary_weekly') {
-      const { text, chartUrl } = await buildWeeklyDigest();
+      const { text, chartUrl } = await buildWeeklyDigest(from);
       if (chartUrl) {
         twiml.message('Building your weekly chart...');
         sendResponse();
@@ -288,7 +481,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       }
     }
 
-    const reply = await handleExpenseResult(result, incomingMsg, from);
+    const reply = await handleExpenseResult(result, incomingMsg, from, user);
     twiml.message(reply);
 
   } catch (err) {
@@ -332,7 +525,7 @@ async function processPDFAsync(from, mediaUrl, user) {
 }
 
 // ─── Handle parsed result ─────────────────────────────────────────────────────
-async function handleExpenseResult(result, raw, from) {
+async function handleExpenseResult(result, raw, from, user) {
   if (result.type === 'expense') {
     const { amount, category, merchant, note, confidence } = result;
     const pending = { amount, category, merchant, note, raw, phone: from };
@@ -343,6 +536,23 @@ async function handleExpenseResult(result, raw, from) {
     }
 
     await appendExpense(pending);
+
+    // Cross-notify household members for shared expenses (fire-and-forget)
+    getUser(from).then(u => {
+      if (!u || !u.householdId) return;
+      const shared = u.sharedCategories || [];
+      if (!shared.includes(category)) return;
+      getHouseholdMembers(from).then(members => {
+        const others = members.filter(m => m.phone !== from);
+        const name = u.name || 'Someone';
+        const msg = name + ' logged ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '');
+        for (const other of others) {
+          sendWhatsAppTo(other.phone, msg).catch(err =>
+            console.error('[household] notify failed:', err.message)
+          );
+        }
+      });
+    }).catch(() => {});
 
     // Contextual trigger: after 3rd expense, ask about card if not set
     try {
@@ -355,11 +565,11 @@ async function handleExpenseResult(result, raw, from) {
     } catch (e) { /* non-critical */ }
 
     // Anomaly check
-    const anomaly = await checkAnomaly(amount, category);
+    const anomaly = await checkAnomaly(amount, category, from);
     const [monthly, overspend, budgetStatus] = await Promise.all([
-      getMonthlySummary(),
-      getOverspendAlerts(),
-      getBudgetStatus()
+      getMonthlySummary(from),
+      getOverspendAlerts(from),
+      getBudgetStatus(from)
     ]);
 
     let reply = buildLoggedReply(pending, monthly);
@@ -399,8 +609,8 @@ async function handleExpenseResult(result, raw, from) {
     return reply;
 
   } else if (result.type === 'summary_monthly') {
-    const monthly = await getMonthlySummary();
-    const budgetStatus = await getBudgetStatus();
+    const monthly = await getMonthlySummary(from);
+    const budgetStatus = await getBudgetStatus(from);
     let reply =
       '*' + (monthly.cycleLabel || getMonthName()) + '*\n' +
       '₹' + monthly.total + '  (' + monthly.count + ' transactions)\n\n' +
@@ -408,19 +618,13 @@ async function handleExpenseResult(result, raw, from) {
       monthly.discretionarySplit;
     if (budgetStatus) reply += '\n\n━━━━━━━━━━━━\n*Budgets*\n' + budgetStatus;
 
-    // Contextual: ask salary date if not set (only once)
-    try {
-      const userForSalary = await getUser(from);
-      if (userForSalary && !userForSalary.salaryType && !pendingContextual.has(from)) {
-        pendingContextual.set(from, { type: 'salary' });
-        reply += '\n\n━━━━━━━━━━━━\nQuick one — what date does your salary usually arrive? (e.g. "26", "last", or "last working day")\n\nHelps me set your month boundaries correctly.';
-      }
-    } catch (e) { /* non-critical */ }
+    // Salary prompt removed — PAY_DATES_2026 fallback provides correct cycle bounds.
+    // Users can still set custom salary dates with "set salary <date>".
 
     return reply;
 
   } else if (result.type === 'summary_weekly') {
-    const weekly = await getWeeklySummary();
+    const weekly = await getWeeklySummary(from);
     return (
 '*This Week*\n' +
       '₹' + weekly.total + '  (' + weekly.count + ' transactions)\n\n' +
@@ -429,7 +633,7 @@ async function handleExpenseResult(result, raw, from) {
     );
 
   } else if (result.type === 'undo') {
-    const undone = await undoLast();
+    const undone = await undoLast(from);
     return `↩️ Removed: ₹${Number(undone.amount).toLocaleString('en-IN')} — ${undone.category}${undone.merchant ? ` @ ${undone.merchant}` : ''}`;
 
   } else if (result.type === 'set_salary') {
@@ -475,7 +679,7 @@ async function handleExpenseResult(result, raw, from) {
 
   } else {
     // Conversational fallback — Claude reads expense data and answers naturally
-    const rows = await getAllRows(from);
+    const rows = await getHouseholdRows(from);
     const conv = await handleConversation(raw, rows, user);
 
     if (conv.type === 'answer') {
@@ -483,7 +687,7 @@ async function handleExpenseResult(result, raw, from) {
 
     } else if (conv.type === 'action') {
       if (conv.action === 'edit_last') {
-        await editLastExpense(conv.field, conv.value);
+        await editLastExpense(conv.field, conv.value, from);
         return conv.text || 'Done! Last expense updated.';
 
       } else if (conv.action === 'bulk_recategorize') {
@@ -546,7 +750,14 @@ function helpText() {
     '• summary — monthly total\n' +
     '• this week — weekly breakdown\n' +
     '• suggest budgets — after 2+ weeks of data\n' +
-    '• undo — remove last entry'
+    '• undo — remove last entry\n\n' +
+    '🏠 *Household:*\n' +
+    '• create household — start a family group\n' +
+    '• join <code> — join an existing household\n' +
+    '• my household — see members & settings\n' +
+    '• add shared: <category> — mark as shared\n' +
+    '• remove shared: <category> — mark as personal\n' +
+    '• leave household — leave the group'
   );
 }
 
