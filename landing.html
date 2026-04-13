@@ -993,11 +993,125 @@
       .step-eg, .phil-contrast { border: 1px solid ButtonText; }
     }
 
+    /* ── INVITE FLOW ───────────────────────────── */
+    .invite-toggle {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .06em;
+      color: var(--amber);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      transition: color .2s;
+    }
+    .invite-toggle:hover { color: var(--amber+); }
+
+    .invite-panel {
+      display: none;
+      max-width: 420px;
+    }
+    .invite-panel.active { display: block; }
+    .wl-wrap.hidden { display: none; }
+
+    .invite-step {
+      display: none;
+    }
+    .invite-step.active { display: block; }
+
+    .invite-form {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .invite-row {
+      display: flex;
+    }
+    .invite-prefix {
+      background: var(--bg2);
+      border: 1px solid var(--border2);
+      border-right: none;
+      color: var(--text2);
+      font-family: var(--mono);
+      font-size: 13px;
+      padding: 13px 12px;
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .invite-input {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 300;
+      padding: 13px 18px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .invite-input::placeholder { color: var(--text3); }
+    .invite-input:focus { border-color: var(--amber); }
+    .invite-error {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: #ef4444;
+      letter-spacing: .04em;
+      min-height: 16px;
+    }
+
+    .invite-success {
+      text-align: center;
+      padding: 20px 0;
+    }
+    .invite-success-icon {
+      font-size: 32px;
+      margin-bottom: 12px;
+      display: block;
+    }
+    .invite-success p {
+      font-size: 13.5px;
+      color: var(--text2);
+      line-height: 1.6;
+      margin-bottom: 18px;
+    }
+    .invite-success p strong {
+      color: var(--text);
+      font-weight: 400;
+    }
+    .btn-wa {
+      background: var(--wa-green);
+      color: #fff;
+      width: 100%;
+      justify-content: center;
+      font-size: 11px;
+      padding: 14px 20px;
+    }
+    .btn-wa:hover { background: #20bd5a; }
+
+    /* CTA section invite — center it */
+    .cta-section .invite-panel {
+      margin: 0 auto;
+      max-width: 400px;
+    }
+
+    @media (max-width: 640px) {
+      .invite-row { flex-direction: column; }
+      .invite-prefix { border-right: 1px solid var(--border2); border-bottom: none; }
+    }
+
   </style>
 </head>
 <body>
 
 <a class="skip-link" href="#main-content">Skip to main content</a>
+
+<!-- Hidden form for Netlify to detect beta-invite submissions -->
+<form name="beta-invite" data-netlify="true" hidden>
+  <input name="code">
+  <input name="phone">
+</form>
 
 <!-- ── TICKER ─────────────────────────────────── -->
 <div class="ticker" aria-hidden="true">
@@ -1059,15 +1173,46 @@
           The act of typing <strong>"lunch 280 Swiggy"</strong> is a small moment of noticing. That noticing — not the report it produces — is what actually changes how you spend. All of it, in the WhatsApp chat you already have.
         </p>
         <div class="fu d400">
-          <form class="waitlist-form" name="waitlist" method="POST" data-netlify="true" onsubmit="handleWL(event)" aria-label="Join waitlist">
-            <input type="hidden" name="form-name" value="waitlist">
-            <label for="hero-email" class="sr-only">Email address</label>
-            <input id="hero-email" type="email" name="email" class="wl-input" placeholder="your@email.com" required autocomplete="email" aria-required="true">
-            <button type="submit" class="btn" style="font-size:10.5px;padding:13px 18px;">
-              Join the waitlist →
-            </button>
-          </form>
-          <p class="hero-note">Free during early access · No app to download</p>
+          <div class="wl-wrap" id="hero-wl">
+            <form class="waitlist-form" name="waitlist" method="POST" data-netlify="true" onsubmit="handleWL(event)" aria-label="Join waitlist">
+              <input type="hidden" name="form-name" value="waitlist">
+              <label for="hero-email" class="sr-only">Email address</label>
+              <input id="hero-email" type="email" name="email" class="wl-input" placeholder="your@email.com" required autocomplete="email" aria-required="true">
+              <button type="submit" class="btn" style="font-size:10.5px;padding:13px 18px;">
+                Join the waitlist →
+              </button>
+            </form>
+            <p class="hero-note">Free during early access · No app to download</p>
+          </div>
+          <div class="invite-panel" id="hero-invite">
+            <div class="invite-step active" data-step="code">
+              <div class="invite-form">
+                <input type="text" class="invite-input invite-code-input" placeholder="Enter invite code" autocomplete="off" spellcheck="false">
+                <button class="btn" style="width:100%;justify-content:center;font-size:10.5px;padding:13px 18px;" onclick="validateCode(this)">Verify code →</button>
+                <p class="invite-error"></p>
+              </div>
+            </div>
+            <div class="invite-step" data-step="phone">
+              <div class="invite-form">
+                <div class="invite-row">
+                  <span class="invite-prefix">+91</span>
+                  <input type="tel" class="invite-input invite-phone-input" placeholder="10-digit mobile number" maxlength="10" pattern="[0-9]{10}" autocomplete="tel">
+                </div>
+                <button class="btn btn-wa" onclick="launchWhatsApp(this)">Open WhatsApp →</button>
+                <p class="invite-error"></p>
+              </div>
+            </div>
+            <div class="invite-step" data-step="done">
+              <div class="invite-success">
+                <span class="invite-success-icon">💬</span>
+                <p>WhatsApp should be open with a message to <strong>Budgy</strong>. Just hit send!</p>
+                <p style="font-size:12px;color:var(--text3);">Didn't open? <a href="#" class="invite-toggle" onclick="retryWhatsApp(this);return false;" style="font-size:inherit;letter-spacing:inherit;">Try again</a></p>
+              </div>
+            </div>
+          </div>
+          <p style="margin-top:14px;">
+            <button class="invite-toggle" id="hero-toggle" onclick="toggleInvite('hero')">Have an invite code?</button>
+          </p>
         </div>
       </div>
 
@@ -1358,13 +1503,44 @@
       <em>Before payday forces you to.</em>
     </h2>
     <p class="cta-sub">Join the waitlist. We'll reach out personally when your spot is ready.</p>
-    <form class="cta-form" name="waitlist" method="POST" data-netlify="true" onsubmit="handleWL(event)" aria-label="Join waitlist">
-      <input type="hidden" name="form-name" value="waitlist">
-      <label for="cta-email" class="sr-only">Email address</label>
-      <input id="cta-email" type="email" name="email" class="wl-input" placeholder="your@email.com" required autocomplete="email" aria-required="true">
-      <button type="submit" class="btn" style="padding:13px 18px;">Join →</button>
-    </form>
-    <p class="hero-note" style="text-align:center;margin-top:16px;">No spam. We'll message you on WhatsApp when it's ready.</p>
+    <div class="wl-wrap" id="cta-wl">
+      <form class="cta-form" name="waitlist" method="POST" data-netlify="true" onsubmit="handleWL(event)" aria-label="Join waitlist">
+        <input type="hidden" name="form-name" value="waitlist">
+        <label for="cta-email" class="sr-only">Email address</label>
+        <input id="cta-email" type="email" name="email" class="wl-input" placeholder="your@email.com" required autocomplete="email" aria-required="true">
+        <button type="submit" class="btn" style="padding:13px 18px;">Join →</button>
+      </form>
+      <p class="hero-note" style="text-align:center;margin-top:16px;">No spam. We'll message you on WhatsApp when it's ready.</p>
+    </div>
+    <div class="invite-panel" id="cta-invite">
+      <div class="invite-step active" data-step="code">
+        <div class="invite-form">
+          <input type="text" class="invite-input invite-code-input" placeholder="Enter invite code" autocomplete="off" spellcheck="false">
+          <button class="btn" style="width:100%;justify-content:center;padding:13px 18px;" onclick="validateCode(this)">Verify code →</button>
+          <p class="invite-error"></p>
+        </div>
+      </div>
+      <div class="invite-step" data-step="phone">
+        <div class="invite-form">
+          <div class="invite-row">
+            <span class="invite-prefix">+91</span>
+            <input type="tel" class="invite-input invite-phone-input" placeholder="10-digit mobile number" maxlength="10" pattern="[0-9]{10}" autocomplete="tel">
+          </div>
+          <button class="btn btn-wa" onclick="launchWhatsApp(this)">Open WhatsApp →</button>
+          <p class="invite-error"></p>
+        </div>
+      </div>
+      <div class="invite-step" data-step="done">
+        <div class="invite-success">
+          <span class="invite-success-icon">💬</span>
+          <p>WhatsApp should be open with a message to <strong>Budgy</strong>. Just hit send!</p>
+          <p style="font-size:12px;color:var(--text3);">Didn't open? <a href="#" class="invite-toggle" onclick="retryWhatsApp(this);return false;" style="font-size:inherit;letter-spacing:inherit;">Try again</a></p>
+        </div>
+      </div>
+    </div>
+    <p style="margin-top:14px;">
+      <button class="invite-toggle" id="cta-toggle" onclick="toggleInvite('cta')">Have an invite code?</button>
+    </p>
   </div>
 </section>
 
@@ -1419,6 +1595,89 @@
       btn.disabled = inp.disabled = false;
     }
   }
+
+  /* ── Invite code flow ─────────────────────── */
+  const VALID_CODES = ['BUDGY2026', 'EARLYBIRD', 'BETA01', 'FRIENDS'];
+  const BUDGY_NUMBER = '16413396983';
+  let lastWaUrl = '';
+
+  function toggleInvite(section) {
+    const wl = document.getElementById(section + '-wl');
+    const panel = document.getElementById(section + '-invite');
+    const toggle = document.getElementById(section + '-toggle');
+    const showing = panel.classList.contains('active');
+
+    if (showing) {
+      panel.classList.remove('active');
+      wl.classList.remove('hidden');
+      toggle.textContent = 'Have an invite code?';
+    } else {
+      panel.classList.add('active');
+      wl.classList.add('hidden');
+      toggle.textContent = '← Back to waitlist';
+    }
+  }
+
+  function validateCode(btn) {
+    const panel = btn.closest('.invite-panel');
+    const input = panel.querySelector('.invite-code-input');
+    const error = panel.querySelector('.invite-step.active .invite-error');
+    const code = input.value.trim().toUpperCase();
+
+    if (!code) { error.textContent = 'Enter your invite code'; return; }
+    if (!VALID_CODES.includes(code)) { error.textContent = 'Invalid code. Check with whoever shared it.'; return; }
+
+    error.textContent = '';
+    panel.dataset.code = code;
+    // Move to phone step
+    panel.querySelector('[data-step="code"]').classList.remove('active');
+    panel.querySelector('[data-step="phone"]').classList.add('active');
+    panel.querySelector('.invite-phone-input').focus();
+  }
+
+  function launchWhatsApp(btn) {
+    const panel = btn.closest('.invite-panel');
+    const input = panel.querySelector('.invite-phone-input');
+    const error = panel.querySelector('.invite-step.active .invite-error');
+    const digits = input.value.replace(/\D/g, '');
+
+    if (digits.length !== 10) { error.textContent = 'Enter a 10-digit mobile number'; return; }
+
+    error.textContent = '';
+    const code = panel.dataset.code || '';
+    btn.textContent = 'Opening…';
+    btn.disabled = true;
+
+    // Save to Netlify Forms (fire-and-forget)
+    const body = new URLSearchParams({
+      'form-name': 'beta-invite',
+      code: code,
+      phone: '+91' + digits
+    });
+    fetch('/', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }).catch(() => {});
+
+    // Build wa.me link and open
+    const msg = encodeURIComponent('Hey Budgy!');
+    lastWaUrl = 'https://wa.me/' + BUDGY_NUMBER + '?text=' + msg;
+    window.open(lastWaUrl, '_blank');
+
+    // Move to done step
+    panel.querySelector('[data-step="phone"]').classList.remove('active');
+    panel.querySelector('[data-step="done"]').classList.add('active');
+  }
+
+  function retryWhatsApp(el) {
+    if (lastWaUrl) window.open(lastWaUrl, '_blank');
+  }
+
+  // Allow Enter key in invite inputs
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter') return;
+    const codeInput = e.target.closest('.invite-step[data-step="code"]');
+    if (codeInput) { codeInput.querySelector('.btn').click(); return; }
+    const phoneInput = e.target.closest('.invite-step[data-step="phone"]');
+    if (phoneInput) { phoneInput.querySelector('.btn').click(); }
+  });
 
   /* Intersection Observer: re-trigger phone chat animation on scroll into view */
   const phone = document.querySelector('.phone');
