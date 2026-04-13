@@ -1,0 +1,1440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Budgy — expense tracking in WhatsApp</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400;1,600&family=Space+Mono:wght@400;700&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" rel="stylesheet">
+  <style>
+
+    /* ── TOKENS ─────────────────────────────────── */
+    :root {
+      --bg:        #07080b;
+      --bg2:       #0c0e12;
+      --surface:   #111418;
+      --border:    #191c22;
+      --border2:   #22262e;
+      --text:      #e0ddd6;
+      --text2:     #7e7c77;
+      --text3:     #30302e;
+      --amber:     #c4903a;
+      --amber+:    #e0ad50;
+      --amber-dim: rgba(196,144,58,.08);
+      --green:     #22c55e;
+      --wa-green:  #25d366;
+      --wa-bg:     #0c1014;
+
+      --serif: 'Cormorant Garamond', Georgia, serif;
+      --mono:  'Space Mono', 'Courier New', monospace;
+      --sans:  'DM Sans', system-ui, sans-serif;
+
+      --max: 1180px;
+      --pad: 56px;
+      --sp:  112px;
+    }
+
+    /* ── RESET ──────────────────────────────────── */
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    html { scroll-behavior:smooth; font-size:16px; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-weight: 300;
+      line-height: 1.65;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Dot grid */
+    body::before {
+      content:'';
+      position:fixed; inset:0;
+      background-image: radial-gradient(circle, rgba(196,144,58,.14) 1px, transparent 1px);
+      background-size: 28px 28px;
+      pointer-events:none; z-index:0;
+    }
+
+    /* Noise grain */
+    body::after {
+      content:'';
+      position:fixed; inset:0;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+      background-size:200px 200px;
+      opacity:.022;
+      pointer-events:none; z-index:1;
+    }
+
+    .wrap {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 var(--pad);
+      position: relative; z-index:2;
+    }
+
+    /* ── TICKER ─────────────────────────────────── */
+    .ticker {
+      width:100%;
+      background: var(--amber);
+      color: #07080b;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: .09em;
+      padding: 7px 0;
+      overflow: hidden;
+      position: relative; z-index:20;
+      white-space: nowrap;
+    }
+    .ticker-inner {
+      display: inline-flex;
+      animation: scroll-ticker 56s linear infinite;
+    }
+    .tick {
+      padding: 0 36px;
+      opacity: .88;
+    }
+    .tick s { /* separator dot */
+      text-decoration:none;
+      opacity:.4;
+      margin: 0 6px;
+    }
+    @keyframes scroll-ticker {
+      from { transform: translateX(0); }
+      to   { transform: translateX(-50%); }
+    }
+
+    /* ── NAV ────────────────────────────────────── */
+    nav {
+      position: sticky; top: 0; z-index:100;
+      border-bottom: 1px solid var(--border);
+      background: rgba(7,8,11,.88);
+      backdrop-filter: blur(24px) saturate(1.2);
+    }
+    .nav-inner {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 var(--pad);
+      height: 62px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 32px;
+    }
+    .logo {
+      font-family: var(--serif);
+      font-size: 24px;
+      font-weight: 600;
+      color: var(--text);
+      text-decoration: none;
+      letter-spacing: -.01em;
+      flex-shrink: 0;
+    }
+    .logo em { color: var(--amber); font-style:italic; }
+    .nav-links {
+      display: flex; gap: 36px;
+      list-style: none;
+    }
+    .nav-links a {
+      color: var(--text2);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 400;
+      letter-spacing: .02em;
+      transition: color .2s;
+    }
+    .nav-links a:hover { color: var(--text); }
+
+    /* ── BUTTONS ────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--amber);
+      color: #07080b;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+      padding: 11px 20px;
+      border: none;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background .18s, transform .1s;
+      white-space: nowrap;
+    }
+    .btn:hover {
+      background: var(--amber+);
+      transform: translateY(-1px);
+    }
+    .btn:active { transform: translateY(0); }
+
+    /* ── HERO ───────────────────────────────────── */
+    .hero {
+      min-height: calc(100vh - 62px);
+      display: flex;
+      align-items: center;
+      padding: 80px 0;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+    }
+
+    /* ambient glow behind hero content */
+    .hero-glow {
+      position: absolute;
+      width: 600px; height: 500px;
+      left: -100px; top: 50%;
+      transform: translateY(-50%);
+      background: radial-gradient(ellipse, rgba(196,144,58,.05) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1fr 460px;
+      gap: 80px;
+      align-items: center;
+      position: relative; z-index:2;
+    }
+    .eyebrow {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--amber);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 22px;
+    }
+    .eyebrow::before {
+      content:'';
+      width: 28px; height: 1px;
+      background: var(--amber);
+    }
+    h1 {
+      font-family: var(--serif);
+      font-size: clamp(50px, 5.8vw, 80px);
+      font-weight: 300;
+      line-height: 1.04;
+      letter-spacing: -.025em;
+      color: var(--text);
+      margin-bottom: 28px;
+    }
+    h1 em { font-style:italic; color: var(--amber); }
+
+    .hero-sub {
+      font-size: 17px;
+      font-weight: 300;
+      color: var(--text2);
+      line-height: 1.72;
+      max-width: 460px;
+      margin-bottom: 48px;
+    }
+    .hero-sub strong { color: var(--text); font-weight: 400; }
+
+    .waitlist-form {
+      display: flex;
+      max-width: 420px;
+    }
+    .wl-input {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-right: none;
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 300;
+      padding: 13px 18px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .wl-input::placeholder { color: var(--text3); }
+    .wl-input:focus { border-color: var(--amber); }
+
+    .hero-note {
+      margin-top: 14px;
+      font-family: var(--mono);
+      font-size: 9.5px;
+      letter-spacing: .07em;
+      color: var(--text3);
+      text-transform: uppercase;
+    }
+
+    /* ── PHONE MOCKUP ───────────────────────────── */
+    .phone-wrap {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+    }
+    .phone-ambient {
+      position: absolute;
+      inset: -60px;
+      background: radial-gradient(ellipse at center, rgba(37,211,102,.04) 0%, transparent 68%);
+      pointer-events:none;
+    }
+
+    .phone {
+      width: 272px;
+      min-height: 552px;
+      background: #090c0f;
+      border: 1.5px solid #252930;
+      border-radius: 38px;
+      overflow: hidden;
+      position: relative;
+      box-shadow:
+        0 0 0 5px #07080b,
+        0 0 0 6.5px #1a1d24,
+        0 48px 96px rgba(0,0,0,.7),
+        inset 0 1px 0 rgba(255,255,255,.04);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* CRT scanlines on phone */
+    .phone::after {
+      content:'';
+      position: absolute; inset:0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 3px,
+        rgba(0,0,0,.04) 3px,
+        rgba(0,0,0,.04) 4px
+      );
+      pointer-events:none; z-index:10;
+      border-radius: inherit;
+    }
+
+    .phone-notch {
+      height: 26px;
+      background: #090c0f;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink:0;
+    }
+    .phone-notch::after {
+      content:'';
+      width: 72px; height: 5px;
+      background: #1c2028;
+      border-radius: 3px;
+    }
+
+    /* WA header */
+    .wa-head {
+      background: #1a2528;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      border-bottom: 1px solid #222e32;
+      flex-shrink:0;
+    }
+    .wa-back { color: var(--wa-green); font-size: 17px; line-height:1; }
+    .wa-av {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #1a5c3f 0%, #25d366 100%);
+      display: flex; align-items:center; justify-content:center;
+      font-family: var(--serif);
+      font-size: 13px; font-weight:600;
+      color: white; flex-shrink:0;
+    }
+    .wa-info { flex:1; min-width:0; }
+    .wa-name { font-size: 12.5px; font-weight:500; color:#e8e6e1; }
+    .wa-status { font-size: 10px; color: var(--wa-green); margin-top:1px; }
+
+    /* Chat area */
+    .wa-chat {
+      background: #0b1215;
+      flex: 1;
+      padding: 12px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Subtle WA wallpaper dots */
+    .wa-chat::before {
+      content:'';
+      position:absolute; inset:0;
+      background-image: radial-gradient(circle, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 18px 18px;
+      pointer-events:none;
+    }
+
+    .bub {
+      max-width: 82%;
+      padding: 7px 10px 4px;
+      border-radius: 7px;
+      font-size: 10.5px;
+      line-height: 1.5;
+      position: relative; z-index:1;
+      opacity: 0;
+      transform: translateY(5px);
+      animation: bubPop .28s ease forwards;
+    }
+    .bub.out {
+      align-self: flex-end;
+      background: #005c4b;
+      color: #e2ded8;
+      border-radius: 7px 7px 0 7px;
+    }
+    .bub.in {
+      align-self: flex-start;
+      background: #1c2c35;
+      color: #e2ded8;
+      border-radius: 7px 7px 7px 0;
+    }
+    .bub-time {
+      font-size: 8.5px;
+      color: rgba(255,255,255,.28);
+      text-align: right;
+      margin-top: 3px;
+    }
+    .bub-data {
+      font-family: var(--mono);
+      font-size: 9px;
+    }
+    .bub-amt {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--wa-green);
+      display: block;
+      margin-bottom: 5px;
+    }
+    .bub-meta { color: rgba(255,255,255,.5); line-height:1.6; }
+    .bub-head {
+      color: var(--amber);
+      font-weight: 700;
+      font-size: 9.5px;
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .typing {
+      align-self:flex-start;
+      background: #1c2c35;
+      border-radius: 12px 12px 12px 0;
+      padding: 9px 13px;
+      opacity: 0;
+      animation: bubPop .28s ease forwards;
+      display: flex; align-items:center; gap:3px;
+    }
+    .typing span {
+      width: 4px; height: 4px;
+      background: rgba(255,255,255,.38);
+      border-radius: 50%;
+      animation: td 1.1s ease infinite;
+    }
+    .typing span:nth-child(2) { animation-delay:.18s; }
+    .typing span:nth-child(3) { animation-delay:.36s; }
+
+    @keyframes td {
+      0%,60%,100% { transform: translateY(0); }
+      30% { transform: translateY(-3.5px); }
+    }
+    @keyframes bubPop {
+      to { opacity:1; transform:translateY(0); }
+    }
+
+    /* Per-bubble delays */
+    .d1 { animation-delay: .6s; }
+    .d2 { animation-delay: 1.4s; }
+    .d3 { animation-delay: 2.6s; }
+    .d4 { animation-delay: 3.2s; }
+    .d5 { animation-delay: 4.6s; }
+    .d6 { animation-delay: 5.4s; }
+    .d7 { animation-delay: 6.8s; }
+
+    /* WA input bar */
+    .wa-bar {
+      background: #1a2528;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-top: 1px solid #222e32;
+      flex-shrink:0;
+    }
+    .wa-field {
+      flex: 1;
+      background: #28383f;
+      border-radius: 20px;
+      padding: 7px 14px;
+      font-size: 10.5px;
+      color: rgba(255,255,255,.32);
+    }
+    .wa-send {
+      width: 30px; height: 30px;
+      background: var(--wa-green);
+      border-radius: 50%;
+      display: flex; align-items:center; justify-content:center;
+      font-size: 13px; color: white;
+    }
+
+    /* ── SECTION COMMON ─────────────────────────── */
+    section { position: relative; z-index:2; }
+    .sp { padding: var(--sp) 0; }
+    .sb { border-bottom: 1px solid var(--border); }
+
+    .sec-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      color: var(--amber);
+      margin-bottom: 14px;
+    }
+    h2 {
+      font-family: var(--serif);
+      font-size: clamp(36px, 3.8vw, 56px);
+      font-weight: 300;
+      line-height: 1.1;
+      letter-spacing: -.022em;
+      color: var(--text);
+      margin-bottom: 18px;
+    }
+    h2 em { font-style:italic; color: var(--amber); }
+    .sec-sub {
+      font-size: 15.5px;
+      font-weight: 300;
+      color: var(--text2);
+      line-height: 1.72;
+      max-width: 520px;
+    }
+
+    /* ── HOW IT WORKS ───────────────────────────── */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--border);
+      margin-top: 60px;
+    }
+    .step {
+      background: var(--bg);
+      padding: 48px 40px;
+      transition: background .28s;
+    }
+    .step:hover { background: var(--bg2); }
+    .step-num {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      color: var(--amber);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .step-num::after {
+      content:'';
+      flex:1; height:1px;
+      background: var(--border2);
+    }
+    .step h3 {
+      font-family: var(--serif);
+      font-size: 25px;
+      font-weight: 400;
+      color: var(--text);
+      margin-bottom: 12px;
+      line-height: 1.2;
+    }
+    .step p {
+      font-size: 13.5px;
+      font-weight: 300;
+      color: var(--text2);
+      line-height: 1.7;
+    }
+    .step-eg {
+      margin-top: 22px;
+      padding: 11px 16px;
+      background: var(--surface);
+      border-left: 2px solid var(--amber);
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--amber);
+      letter-spacing: .02em;
+    }
+
+    /* ── FEATURES ───────────────────────────────── */
+    .feat-head {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 80px;
+      align-items: start;
+      margin-bottom: 60px;
+    }
+    .feat-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--border);
+    }
+    .feat-card {
+      background: var(--bg);
+      padding: 36px 30px;
+      border-top: 2px solid transparent;
+      transition: background .28s, border-color .28s;
+    }
+    .feat-card:hover {
+      background: var(--amber-dim);
+      border-top-color: var(--amber);
+    }
+    .feat-icon {
+      font-size: 18px;
+      margin-bottom: 18px;
+      display: block;
+    }
+    .feat-card h4 {
+      font-family: var(--serif);
+      font-size: 20px;
+      font-weight: 400;
+      color: var(--text);
+      margin-bottom: 9px;
+      line-height: 1.2;
+    }
+    .feat-card p {
+      font-size: 13px;
+      font-weight: 300;
+      color: var(--text2);
+      line-height: 1.68;
+    }
+
+    /* ── PRICING ────────────────────────────────── */
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 100px;
+      align-items: center;
+    }
+    .price-card {
+      border: 1px solid var(--border2);
+      background: var(--surface);
+      padding: 40px 36px;
+      position: relative;
+    }
+    .price-card::before {
+      content: 'EARLY ACCESS';
+      position: absolute;
+      top: -1px; right: 24px;
+      background: var(--amber);
+      color: #07080b;
+      font-family: var(--mono);
+      font-size: 8.5px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      padding: 4px 10px;
+    }
+    .price-tag {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .price-amt {
+      font-family: var(--serif);
+      font-size: 58px;
+      font-weight: 300;
+      color: var(--text);
+      line-height: 1;
+      letter-spacing: -.03em;
+    }
+    .price-sym {
+      font-family: var(--serif);
+      font-size: 24px;
+      font-weight: 300;
+      color: var(--text2);
+      align-self: flex-start;
+      margin-top: 10px;
+    }
+    .price-per {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text2);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      margin-bottom: 28px;
+    }
+    .price-divider {
+      height: 1px;
+      background: var(--border);
+      margin-bottom: 24px;
+    }
+    .price-includes {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+    .price-includes li {
+      font-size: 13.5px;
+      font-weight: 300;
+      color: var(--text2);
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      line-height: 1.4;
+    }
+    .price-includes li::before {
+      content: '→';
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--amber);
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    .price-note {
+      font-family: var(--mono);
+      font-size: 9.5px;
+      letter-spacing: .07em;
+      color: var(--text3);
+      text-transform: uppercase;
+      margin-top: 14px;
+    }
+    .pricing-aside {
+      margin-top: 0;
+      padding: 20px 22px;
+      background: var(--bg2);
+      border-left: 2px solid var(--border2);
+    }
+    .pricing-aside strong {
+      display: block;
+      font-family: var(--serif);
+      font-size: 17px;
+      font-weight: 400;
+      color: var(--text);
+      margin-bottom: 7px;
+    }
+    .pricing-aside p {
+      font-size: 13px;
+      font-weight: 300;
+      color: var(--text2);
+      line-height: 1.65;
+    }
+
+    /* ── PHILOSOPHY STRIP ───────────────────────── */
+    .philosophy {
+      border-bottom: 1px solid var(--border);
+      padding: 80px 0;
+      position: relative; z-index:2;
+    }
+    .phil-inner {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 80px;
+      align-items: center;
+    }
+    .phil-pull {
+      font-family: var(--serif);
+      font-size: clamp(32px, 3.6vw, 50px);
+      font-weight: 300;
+      font-style: italic;
+      line-height: 1.14;
+      letter-spacing: -.02em;
+      color: var(--text);
+    }
+    .phil-pull em { color: var(--amber); font-style: normal; }
+    .phil-body {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      border-left: 1px solid var(--border2);
+      padding-left: 60px;
+    }
+    .phil-body p {
+      font-size: 15px;
+      font-weight: 300;
+      color: var(--text2);
+      line-height: 1.76;
+    }
+    .phil-body p strong { color: var(--text); font-weight: 400; }
+    .phil-contrast {
+      margin-top: 10px;
+      padding: 16px 20px;
+      background: var(--surface);
+      border-left: 2px solid var(--amber);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .04em;
+      color: var(--text2);
+      line-height: 1.8;
+    }
+    .phil-contrast span { color: var(--amber); }
+    @media (max-width: 960px) {
+      .phil-inner { grid-template-columns: 1fr; gap: 40px; }
+      .phil-body { border-left: none; padding-left: 0; border-top: 1px solid var(--border2); padding-top: 40px; }
+    }
+
+    /* ── FAQ ────────────────────────────────────── */
+    .faq-list {
+      margin-top: 52px;
+      border-top: 1px solid var(--border);
+    }
+    .faq-item { border-bottom: 1px solid var(--border); }
+    .faq-btn {
+      width:100%;
+      background:none; border:none;
+      padding: 26px 0;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 24px;
+      cursor:pointer;
+      text-align:left;
+    }
+    .faq-q {
+      font-family: var(--serif);
+      font-size: 21px;
+      font-weight: 400;
+      color: var(--text);
+      line-height: 1.3;
+    }
+    .faq-ic {
+      font-family: var(--mono);
+      font-size: 18px;
+      color: var(--amber);
+      flex-shrink:0;
+      transition: transform .3s cubic-bezier(.4,0,.2,1);
+    }
+    .faq-item.open .faq-ic { transform: rotate(45deg); }
+    .faq-body {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height .38s cubic-bezier(.4,0,.2,1);
+    }
+    .faq-item.open .faq-body { max-height: 180px; }
+    .faq-ans {
+      padding-bottom: 26px;
+      font-size: 14.5px;
+      font-weight: 300;
+      color: var(--text2);
+      line-height: 1.72;
+      max-width: 640px;
+    }
+
+    /* ── WAITLIST CTA ───────────────────────────── */
+    .cta-section {
+      text-align: center;
+      padding: 128px 0;
+      position: relative;
+    }
+    .cta-section::before {
+      content:'';
+      position: absolute; inset:0;
+      background: radial-gradient(ellipse at center, rgba(196,144,58,.05) 0%, transparent 65%);
+      pointer-events:none;
+    }
+    .cta-section h2 { margin: 0 auto 18px; max-width: 640px; }
+    .cta-section .sec-label {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 22px;
+    }
+    .cta-sub {
+      font-size: 16px;
+      color: var(--text2);
+      margin-bottom: 44px;
+    }
+    .cta-form {
+      display: flex;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    /* ── FOOTER ─────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 36px 0;
+      position: relative; z-index:2;
+    }
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .footer-logo {
+      font-family: var(--serif);
+      font-size: 19px;
+      font-weight: 400;
+      color: var(--text2);
+    }
+    .footer-meta {
+      font-family: var(--mono);
+      font-size: 9.5px;
+      letter-spacing: .07em;
+      color: var(--text3);
+      text-transform: uppercase;
+    }
+
+    /* ── FADE-UP ENTRIES ────────────────────────── */
+    @keyframes fu {
+      from { opacity:0; transform:translateY(18px); }
+      to   { opacity:1; transform:translateY(0); }
+    }
+    .fu { opacity:0; animation: fu .8s ease forwards; }
+    .fu.d100 { animation-delay:.1s; }
+    .fu.d200 { animation-delay:.2s; }
+    .fu.d300 { animation-delay:.3s; }
+    .fu.d400 { animation-delay:.42s; }
+    .fu.d500 { animation-delay:.54s; }
+
+    /* ── RESPONSIVE ─────────────────────────────── */
+    @media (max-width: 960px) {
+      :root { --pad:28px; --sp:80px; }
+      .hero-grid { grid-template-columns:1fr; }
+      .phone-wrap { display:none; }
+      .steps { grid-template-columns:1fr; }
+      .feat-head { grid-template-columns:1fr; gap:24px; }
+      .feat-grid { grid-template-columns:1fr 1fr; }
+      .pricing-grid { grid-template-columns:1fr; gap:48px; }
+      nav .nav-links { display:none; }
+      .waitlist-form { max-width:100%; }
+      .cta-form { max-width:100%; }
+      .footer-inner { flex-direction:column; align-items:flex-start; gap:10px; }
+    }
+    @media (max-width: 640px) {
+      :root { --sp:64px; --pad:20px; }
+      .feat-grid { grid-template-columns:1fr; }
+      .step { padding:36px 24px; }
+      h1 { font-size: 44px; }
+      h2 { font-size: 34px; }
+      .waitlist-form { flex-direction:column; }
+      .wl-input { border-right:1px solid var(--border2); border-bottom:none; }
+      .waitlist-form .btn { width:100%; justify-content:center; }
+      .cta-form { flex-direction:column; }
+      .cta-form .wl-input { border-right:1px solid var(--border2); border-bottom:none; }
+      .cta-form .btn { width:100%; justify-content:center; }
+      .price-card { padding:28px 22px; }
+      .price-amt { font-size:48px; }
+      .ticker { font-size:9.5px; }
+    }
+
+    /* ── ACCESSIBILITY ───────────────────────────── */
+    .sr-only {
+      position: absolute;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* Skip to main content */
+    .skip-link {
+      position: absolute;
+      top: -100%;
+      left: var(--pad);
+      background: var(--amber);
+      color: #07080b;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      padding: 10px 18px;
+      text-decoration: none;
+      z-index: 9999;
+      transition: top .15s;
+    }
+    .skip-link:focus { top: 8px; }
+
+    /* Visible focus rings — respect the amber accent */
+    :focus-visible {
+      outline: 2px solid var(--amber);
+      outline-offset: 3px;
+      border-radius: 2px;
+    }
+    /* Remove outline on mouse clicks, keep for keyboard */
+    :focus:not(:focus-visible) { outline: none; }
+
+    /* Ensure interactive text contrast meets WCAG AA */
+    .nav-links a:hover,
+    .nav-links a:focus-visible { color: var(--text); }
+
+    /* FAQ button keyboard state */
+    .faq-btn:focus-visible { outline-offset: 6px; }
+
+    /* Button focus */
+    .btn:focus-visible {
+      outline: 2px solid var(--amber+);
+      outline-offset: 4px;
+    }
+
+    /* Reduce motion for vestibular/epilepsy */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .ticker-inner { animation: none; }
+      /* Show everything that would fade in */
+      .fu { opacity:1; transform:none; }
+    }
+
+    /* High contrast mode support */
+    @media (forced-colors: active) {
+      .btn { border: 2px solid ButtonText; }
+      .step-eg, .phil-contrast { border: 1px solid ButtonText; }
+    }
+
+  </style>
+</head>
+<body>
+
+<a class="skip-link" href="#main-content">Skip to main content</a>
+
+<!-- ── TICKER ─────────────────────────────────── -->
+<div class="ticker" aria-hidden="true">
+  <div class="ticker-inner">
+    <span class="tick">₹280 logged <s>·</s> "lunch swiggy" <s>·</s> that's 4 times this week</span>
+    <span class="tick">you're 31% above pace <s>·</s> 14 days to payday <s>·</s> budgy noticed before you did</span>
+    <span class="tick">₹499 <s>·</s> netflix <s>·</s> you haven't opened it in 23 days</span>
+    <span class="tick">friday digest delivered <s>·</s> ₹6,200 discretionary <s>·</s> ₹2,100 committed</span>
+    <span class="tick">you're ahead of pace this week <s>·</s> payday in 4 days <s>·</s> you've earned this one</span>
+    <span class="tick">₹4,800 spike detected <s>·</s> dining <s>·</s> 3× your usual <s>·</s> anniversary?</span>
+    <span class="tick">your bank tracked it too <s>·</s> you just never looked</span>
+    <span class="tick">₹85 rapido <s>·</s> ₹110 rapido <s>·</s> ₹95 rapido <s>·</s> maybe just get a monthly pass</span>
+    <span class="tick">statement date in 2 days <s>·</s> wait <s>·</s> get 47 interest-free days instead</span>
+    <span class="tick">no log in 3 days <s>·</s> budgy is watching <s>·</s> your wallet isn't</span>
+    <!-- duplicate for seamless loop -->
+    <span class="tick">₹280 logged <s>·</s> "lunch swiggy" <s>·</s> that's 4 times this week</span>
+    <span class="tick">you're 31% above pace <s>·</s> 14 days to payday <s>·</s> budgy noticed before you did</span>
+    <span class="tick">₹499 <s>·</s> netflix <s>·</s> you haven't opened it in 23 days</span>
+    <span class="tick">friday digest delivered <s>·</s> ₹6,200 discretionary <s>·</s> ₹2,100 committed</span>
+    <span class="tick">you're ahead of pace this week <s>·</s> payday in 4 days <s>·</s> you've earned this one</span>
+    <span class="tick">₹4,800 spike detected <s>·</s> dining <s>·</s> 3× your usual <s>·</s> anniversary?</span>
+    <span class="tick">your bank tracked it too <s>·</s> you just never looked</span>
+    <span class="tick">₹85 rapido <s>·</s> ₹110 rapido <s>·</s> ₹95 rapido <s>·</s> maybe just get a monthly pass</span>
+    <span class="tick">statement date in 2 days <s>·</s> wait <s>·</s> get 47 interest-free days instead</span>
+    <span class="tick">no log in 3 days <s>·</s> budgy is watching <s>·</s> your wallet isn't</span>
+  </div>
+</div>
+
+<!-- ── NAV ────────────────────────────────────── -->
+<nav aria-label="Main navigation">
+  <div class="nav-inner">
+    <a href="#" class="logo" aria-label="Budgy home">B<em>u</em>dgy</a>
+    <ul class="nav-links" role="list">
+      <li><a href="#how">How it works</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#pricing">Pricing</a></li>
+      <li><a href="#faq">FAQ</a></li>
+    </ul>
+    <a href="#waitlist" class="btn">Join waitlist →</a>
+  </div>
+</nav>
+
+<main id="main-content">
+
+<!-- ── HERO ───────────────────────────────────── -->
+<section class="hero sb">
+  <div class="hero-glow"></div>
+  <div class="wrap">
+    <div class="hero-grid">
+
+      <!-- Left: copy -->
+      <div>
+        <p class="eyebrow fu d100">Your financial conscience in WhatsApp</p>
+        <h1 class="fu d200">
+          You already know<br>where it went.<br>
+          <em>That's not the problem.</em>
+        </h1>
+        <p class="hero-sub fu d300">
+          The act of typing <strong>"lunch 280 Swiggy"</strong> is a small moment of noticing. That noticing — not the report it produces — is what actually changes how you spend. All of it, in the WhatsApp chat you already have.
+        </p>
+        <div class="fu d400">
+          <form class="waitlist-form" name="waitlist" method="POST" data-netlify="true" onsubmit="handleWL(event)" aria-label="Join waitlist">
+            <input type="hidden" name="form-name" value="waitlist">
+            <label for="hero-email" class="sr-only">Email address</label>
+            <input id="hero-email" type="email" name="email" class="wl-input" placeholder="your@email.com" required autocomplete="email" aria-required="true">
+            <button type="submit" class="btn" style="font-size:10.5px;padding:13px 18px;">
+              Join the waitlist →
+            </button>
+          </form>
+          <p class="hero-note">Free during early access · No app to download</p>
+        </div>
+      </div>
+
+      <!-- Right: phone mockup -->
+      <div class="phone-wrap fu d500" aria-hidden="true" role="presentation">
+        <div class="phone-ambient"></div>
+        <div class="phone">
+          <div class="phone-notch"></div>
+
+          <div class="wa-head">
+            <span class="wa-back">‹</span>
+            <div class="wa-av">B</div>
+            <div class="wa-info">
+              <div class="wa-name">Budgy</div>
+              <div class="wa-status">● online</div>
+            </div>
+          </div>
+
+          <div class="wa-chat">
+            <!-- 1. user sends expense -->
+            <div class="bub out d1">
+              lunch 280 swiggy
+            </div>
+            <!-- 2. typing -->
+            <div class="typing d2">
+              <span></span><span></span><span></span>
+            </div>
+            <!-- 3. bot confirms -->
+            <div class="bub in bub-data d3">
+              <span class="bub-amt">₹280 logged ✓</span>
+              <span class="bub-meta">
+                Food Delivery · Swiggy<br>
+                Cycle total: ₹14,280
+              </span>
+              <div class="bub-time">11:42 AM</div>
+            </div>
+            <!-- 4. user asks for summary -->
+            <div class="bub out d4">summary</div>
+            <!-- 5. typing -->
+            <div class="typing d5">
+              <span></span><span></span><span></span>
+            </div>
+            <!-- 6. bot gives summary -->
+            <div class="bub in bub-data d6">
+              <span class="bub-head">Mar 27 → Apr 28 cycle</span>
+              <span class="bub-meta">
+                🍜 Food & Dining &nbsp;₹4,280<br>
+                🛒 Groceries &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;₹3,100<br>
+                🚗 Transport &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;₹890<br>
+                📦 Other &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;₹6,010<br>
+                <br>
+                <span style="color:#22c55e">Total: ₹14,280</span>
+              </span>
+              <div class="bub-time">11:43 AM</div>
+            </div>
+            <!-- 7. pace check -->
+            <div class="bub in bub-data d7" style="margin-top:2px">
+              <span class="bub-meta">
+                <span style="color:#fbbf24">⚠ Mild heads-up.</span><br><br>
+                You're 18% above last cycle's pace. 30 days to payday. Watch discretionary this week.
+              </span>
+              <div class="bub-time">11:43 AM</div>
+            </div>
+          </div>
+
+          <div class="wa-bar">
+            <div class="wa-field">Message</div>
+            <div class="wa-send">↑</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── PHILOSOPHY ─────────────────────────────── -->
+<section class="philosophy">
+  <div class="wrap">
+    <div class="phil-inner">
+
+      <div class="phil-pull">
+        Your bank already<br>tracks everything.<br>
+        <em>Nothing has changed.</em>
+      </div>
+
+      <div class="phil-body">
+        <p>
+          Every competitor is racing to remove friction — your bank SMS auto-read, your transactions auto-categorised, you never have to think about it. <strong>The research says that's exactly the problem.</strong> Frictionless tracking gives you a report. It does not give you awareness.
+        </p>
+        <p>
+          When you type "lunch 280 Swiggy", you're not just logging. You're acknowledging. That four-second pause between spending and recording is the behaviour-change mechanism. The moment you choose to notice is the moment you're capable of choosing differently.
+        </p>
+        <p>
+          Budgy also knows when to encourage you. When you're ahead of pace with payday around the corner, it tells you. When you're 40% above baseline with 18 days to go, it tells you that too. The signal — positive or corrective — delivered at the right moment, is what makes new habits actually stick.
+        </p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ────────────────────────────── -->
+<section class="sp sb" id="how" aria-label="How it works">
+  <div class="wrap">
+
+    <h2>Three texts.<br>That's the whole setup.</h2>
+
+    <div class="steps">
+      <div class="step">
+        <p class="step-num">01</p>
+        <h3>Log it — intentionally</h3>
+        <p>Text, photo, receipt, bank SMS screenshot, PDF statement — Budgy reads all of it. The friction of typing is the point. Four seconds of noticing does more than any auto-sync ever will.</p>
+        <div class="step-eg">"lunch 280 swiggy"</div>
+      </div>
+      <div class="step">
+        <p class="step-num">02</p>
+        <h3>It knows your real cycle</h3>
+        <p>Not the calendar month. Your actual salary cycle — because your budget doesn't reset on the 1st. Summaries, baselines, and nudges all respect when your money actually arrives.</p>
+        <div class="step-eg">Cycle: Mar 27 → Apr 28 · ₹14,280</div>
+      </div>
+      <div class="step">
+        <p class="step-num">03</p>
+        <h3>Hear from it early</h3>
+        <p>Smart nudges, timed to your real spend pace. Not a notification you swipe away — a message from something that knows your full history and speaks plainly about what it sees.</p>
+        <div class="step-eg">⚠ 40% above pace · 18 days to payday</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURES ──────────────────────────────────── -->
+<section class="sp sb" id="features" aria-label="Features">
+  <div class="wrap">
+    <div class="feat-head">
+      <div>
+
+        <h2>Quietly doing a lot.<br><em>Loudly when it matters.</em></h2>
+      </div>
+      <p class="sec-sub" style="padding-top:36px;">Most of what Budgy does runs in the background. It shows up in your WhatsApp when something actually needs your attention.</p>
+    </div>
+
+    <div class="feat-grid">
+      <div class="feat-card">
+        <span class="feat-icon">📥</span>
+        <h4>Logs anything you throw at it</h4>
+        <p>Text, photo, bank SMS screenshot, receipt image, PDF statement. If a transaction happened, Budgy can capture it — including smart deduplication when you import a PDF you've already partially logged.</p>
+      </div>
+      <div class="feat-card">
+        <span class="feat-icon">🔔</span>
+        <h4>Smart nudges. All context-aware.</h4>
+        <p>Daily logging reminder, evening check-in, 3-day lapse nudge, overspend alert, smart pace nudge, Friday digest with bar chart, and a pre-statement alert so you never lose interest-free days on your credit card.</p>
+      </div>
+      <div class="feat-card">
+        <span class="feat-icon">⚡</span>
+        <h4>Anomaly detection</h4>
+        <p>Detects 3× category spikes, largest-ever single expenses, and unusually large unknowns — before they blur into the noise of your monthly total. You see it the same day.</p>
+      </div>
+      <div class="feat-card">
+        <span class="feat-icon">💳</span>
+        <h4>Billing cycle intelligence</h4>
+        <p>Ask "when should I buy a laptop?" and Budgy will tell you the right card and how many interest-free days you'd get. It knows your statement dates and thinks about the calendar so you don't have to.</p>
+      </div>
+      <div class="feat-card">
+        <span class="feat-icon">💬</span>
+        <h4>A conscience you can talk to</h4>
+        <p>Ask "how much on Swiggy this month?" or say "fix all the Other category entries" — Budgy understands and acts. It has your full spending history as context for every reply.</p>
+      </div>
+      <div class="feat-card">
+        <span class="feat-icon">📊</span>
+        <h4>Salary-cycle summaries</h4>
+        <p>Cycle-labelled summaries (Mar 27 → Apr 28, not "April"), discretionary vs committed split, weekly bar chart delivered to your chat every Friday. The picture you actually need, not a calendar-month lie.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── PRICING ──────────────────────────────────── -->
+<section class="sp sb" id="pricing" aria-label="Pricing">
+  <div class="wrap">
+    <div class="pricing-grid">
+
+      <!-- Left: copy -->
+      <div>
+
+        <h2>Embarrassingly<br><em>affordable.</em></h2>
+        <p class="sec-sub" style="margin-bottom:28px">No VC money. No freemium bait. Just a fair price for something that actually works — and a Google Sheet you own outright.</p>
+
+        <div class="pricing-aside">
+          <strong>Coming soon: Group plan</strong>
+          <p>One number shared across your household or friend group. Split the cost — works out to under ₹50 a head per month.</p>
+        </div>
+      </div>
+
+      <!-- Right: price card -->
+      <div>
+        <div class="price-card">
+          <div class="price-tag">
+            <span class="price-sym">₹</span>
+            <span class="price-amt">149</span>
+          </div>
+          <p class="price-per">per user / month</p>
+
+          <div class="price-divider"></div>
+
+          <ul class="price-includes">
+            <li>Unlimited expense logging via WhatsApp</li>
+            <li>Bank statement PDF import</li>
+            <li>Salary-cycle tracking + weekly digests</li>
+            <li>Smart nudges &amp; overspend alerts</li>
+            <li>Conversational AI queries</li>
+            <li>Your data in a Google Sheet you own</li>
+          </ul>
+
+          <a href="#waitlist" class="btn" style="width:100%;justify-content:center;">
+            Join the waitlist →
+          </a>
+          <p class="price-note">Free during early access · Paid plan starts at launch</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── FAQ ──────────────────────────────────────── -->
+<section class="sp sb" id="faq" aria-label="Frequently asked questions">
+  <div class="wrap">
+
+    <h2>Good questions.</h2>
+
+    <div class="faq-list">
+      <div class="faq-item">
+        <button class="faq-btn" onclick="toggleFaq(this)" aria-expanded="false" aria-controls="faq-a-1">
+          <span class="faq-q">Why not just use Axio, Fi, or my bank app?</span>
+          <span class="faq-ic" aria-hidden="true">+</span>
+        </button>
+        <div class="faq-body" id="faq-a-1" role="region">
+          <p class="faq-ans">Those tools track after the fact. The value they sell is convenience — they handle it so you don't have to think. That's exactly the problem. Spending awareness built through deliberate, manual logging is associated with better financial behaviour. The friction is the feature. Budgy is for people who want to be conscious about money, not just informed about it retroactively.</p>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-btn" onclick="toggleFaq(this)" aria-expanded="false" aria-controls="faq-a-2">
+          <span class="faq-q">Do I need to install anything?</span>
+          <span class="faq-ic" aria-hidden="true">+</span>
+        </button>
+        <div class="faq-body" id="faq-a-2" role="region">
+          <p class="faq-ans">No. Budgy lives in WhatsApp. Add the number, text "hi", answer two quick questions — your name and salary date — and you're set up. Nothing to download. No app store. No account creation.</p>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-btn" onclick="toggleFaq(this)" aria-expanded="false" aria-controls="faq-a-3">
+          <span class="faq-q">Who sees my data?</span>
+          <span class="faq-ic" aria-hidden="true">+</span>
+        </button>
+        <div class="faq-body" id="faq-a-3" role="region">
+          <p class="faq-ans">Your data goes into a Google Sheet you own — not our servers. Budgy processes each message long enough to log it, then moves on. PDFs are read and discarded. We have no interest in your financial history beyond making the product work.</p>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-btn" onclick="toggleFaq(this)" aria-expanded="false" aria-controls="faq-a-4">
+          <span class="faq-q">What if I use multiple banks and credit cards?</span>
+          <span class="faq-ic" aria-hidden="true">+</span>
+        </button>
+        <div class="faq-body" id="faq-a-4" role="region">
+          <p class="faq-ans">That's exactly what Budgy is built for. PDF import supports ICICI, HSBC (savings + credit card), AMEX, Swiggy HDFC, and Axis — each with tailored rules for what to include or skip. Store your statement dates per card and Budgy will alert you before losing interest-free days.</p>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-btn" onclick="toggleFaq(this)" aria-expanded="false" aria-controls="faq-a-5">
+          <span class="faq-q">When will it be available?</span>
+          <span class="faq-ic" aria-hidden="true">+</span>
+        </button>
+        <div class="faq-body" id="faq-a-5" role="region">
+          <p class="faq-ans">We're opening access in small batches as we build toward a wider launch. Join the waitlist and you'll hear from us personally when your spot is ready — not via a mass email.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── WAITLIST CTA ──────────────────────────────── -->
+<section class="cta-section" id="waitlist">
+  <div class="wrap">
+
+    <h2>
+      Start noticing.<br>
+      <em>Before payday forces you to.</em>
+    </h2>
+    <p class="cta-sub">Join the waitlist. We'll reach out personally when your spot is ready.</p>
+    <form class="cta-form" name="waitlist" method="POST" data-netlify="true" onsubmit="handleWL(event)" aria-label="Join waitlist">
+      <input type="hidden" name="form-name" value="waitlist">
+      <label for="cta-email" class="sr-only">Email address</label>
+      <input id="cta-email" type="email" name="email" class="wl-input" placeholder="your@email.com" required autocomplete="email" aria-required="true">
+      <button type="submit" class="btn" style="padding:13px 18px;">Join →</button>
+    </form>
+    <p class="hero-note" style="text-align:center;margin-top:16px;">No spam. We'll message you on WhatsApp when it's ready.</p>
+  </div>
+</section>
+
+</main>
+
+<!-- ── FOOTER ────────────────────────────────────── -->
+<footer>
+  <div class="wrap">
+    <div class="footer-inner">
+      <span class="footer-logo">Budgy</span>
+
+      <span class="footer-meta">Not affiliated with WhatsApp or Meta · © 2026</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  /* FAQ accordion */
+  function toggleFaq(btn) {
+    const item = btn.closest('.faq-item');
+    const open = item.classList.contains('open');
+    document.querySelectorAll('.faq-item.open').forEach(i => {
+      i.classList.remove('open');
+      i.querySelector('.faq-btn').setAttribute('aria-expanded', 'false');
+    });
+    if (!open) {
+      item.classList.add('open');
+      btn.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  /* Waitlist form — submits to Netlify Forms */
+  async function handleWL(e) {
+    e.preventDefault();
+    const form = e.target;
+    const btn  = form.querySelector('button');
+    const inp  = form.querySelector('input[type="email"]');
+    const email = inp.value;
+
+    btn.textContent = 'Sending…';
+    btn.disabled = inp.disabled = true;
+
+    try {
+      const body = new URLSearchParams({ 'form-name': 'waitlist', email });
+      await fetch('/', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+      btn.textContent = 'You\'re on the list ✓';
+      btn.style.background = '#22c55e';
+      btn.style.color = '#07080b';
+      inp.style.opacity = '.5';
+    } catch {
+      btn.textContent = 'Try again';
+      btn.disabled = inp.disabled = false;
+    }
+  }
+
+  /* Intersection Observer: re-trigger phone chat animation on scroll into view */
+  const phone = document.querySelector('.phone');
+  if (phone && 'IntersectionObserver' in window) {
+    const obs = new IntersectionObserver(([e]) => {
+      if (e.isIntersecting) {
+        const bubs = phone.querySelectorAll('.bub, .typing');
+        bubs.forEach(b => {
+          b.style.animation = 'none';
+          void b.offsetWidth;
+          b.style.animation = '';
+        });
+      }
+    }, { threshold: 0.5 });
+    obs.observe(phone);
+  }
+</script>
+</body>
+</html>
