@@ -5,6 +5,15 @@ const twilio = require('twilio');
 
 const FROM = process.env.TWILIO_WHATSAPP_FROM;
 
+// ─── Interactive message template SIDs (session-only, no approval needed) ────
+const INTERACTIVE_SIDS = {
+  cc_setup_ask:           'HX4e4e5897998dc38b311bcb62efe6a3e4',
+  household_invite_step:  'HXbb2a9761504722c0eddab1edac50fa4c',
+  household_invite_msg:   'HX580e006baf80c7ad1f2b772ecdda81b9',
+  category_picker:        'HX1a5738924be3cfbf63af2dbf58a7a37e',
+  salary_setup_ask:       'HXc3182799f55f58f4aac4a439102f0b58',
+};
+
 let _client = null;
 function getClient() {
   if (!_client) {
@@ -47,6 +56,32 @@ async function sendWhatsAppTemplate(to, contentSid, contentVariables) {
   await client.messages.create(params);
 }
 
+// Send an interactive message (buttons or list picker) using a Content Template
+// Falls back to text-only body if template send fails
+async function sendWhatsAppInteractive(to, templateKey, variables, fallbackBody) {
+  const client = getClient();
+  if (!client || !FROM) {
+    console.warn('[messaging] Twilio not configured, skipping interactive send');
+    return;
+  }
+  const contentSid = INTERACTIVE_SIDS[templateKey];
+  if (!contentSid) {
+    console.warn('[messaging] No template SID for', templateKey, '— using fallback');
+    if (fallbackBody) await client.messages.create({ from: FROM, to, body: fallbackBody });
+    return;
+  }
+  try {
+    const params = { from: FROM, to, contentSid };
+    if (variables && Object.keys(variables).length > 0) {
+      params.contentVariables = JSON.stringify(variables);
+    }
+    await client.messages.create(params);
+  } catch (err) {
+    console.warn('[messaging] Interactive send failed, using fallback:', err.message);
+    if (fallbackBody) await client.messages.create({ from: FROM, to, body: fallbackBody });
+  }
+}
+
 // Broadcast to all users (for scheduled nudges)
 async function sendWhatsAppBroadcast(body, getAllUsers) {
   const users = await getAllUsers();
@@ -77,6 +112,8 @@ module.exports = {
   sendWhatsAppTo,
   sendWhatsAppImageTo,
   sendWhatsAppTemplate,
+  sendWhatsAppInteractive,
   sendWhatsAppBroadcast,
-  sendWhatsAppImageBroadcast
+  sendWhatsAppImageBroadcast,
+  INTERACTIVE_SIDS
 };

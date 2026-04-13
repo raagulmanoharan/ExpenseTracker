@@ -17,7 +17,7 @@ const {
   getSpendingContext
 } = require('./db');
 const { scheduleHeartbeat, buildWeeklyDigest } = require('./scheduler');
-const { sendWhatsAppTo, sendWhatsAppImageTo } = require('./messaging');
+const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppInteractive } = require('./messaging');
 const { handleConversation } = require('./conversation');
 const { composeResponse } = require('./responder');
 const { searchNarratives } = require('./insights');
@@ -78,6 +78,8 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
   const numMedia = parseInt(req.body.NumMedia || '0');
   const mediaUrl = req.body.MediaUrl0;
   const mediaType = (req.body.MediaContentType0 || '').toLowerCase();
+  const buttonPayload = (req.body.ButtonPayload || '').trim();
+  const buttonText = (req.body.ButtonText || '').trim();
   let responseSent = false;
 
   function sendResponse() {
@@ -128,21 +130,64 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       }
     }
 
-    // ── 0b. Household setup — shared category selection ──────────────────
+    // ── 0b. Household setup — shared category selection + invite ──────────
     if (pendingHouseholdSetup.has(from)) {
-      const { householdId } = pendingHouseholdSetup.get(from);
+      const setup = pendingHouseholdSetup.get(from);
+
+      if (setup.stage === 'invite') {
+        // Stage 2: waiting for phone number to invite
+        if (buttonPayload === 'hh_done' || /^(done|skip|no|nah|cancel)$/i.test(lower)) {
+          pendingHouseholdSetup.delete(from);
+          twiml.message('All set! They can join anytime with "join ' + setup.householdId + '".');
+          return sendResponse();
+        }
+        // "Invite someone" button — prompt for number
+        if (buttonPayload === 'hh_invite') {
+          twiml.message('Send their phone number (e.g. 8220615883).');
+          return sendResponse();
+        }
+        // Parse phone number — accept 10 digits, +91..., 91...
+        const digits = incomingMsg.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+        let invitePhone;
+        if (/^91\d{10}$/.test(digits)) invitePhone = 'whatsapp:+' + digits;
+        else if (/^\d{10}$/.test(digits)) invitePhone = 'whatsapp:+91' + digits;
+        else {
+          twiml.message('Couldn\'t parse that. Send a 10-digit mobile number, or "done" to skip.');
+          return sendResponse();
+        }
+        if (invitePhone === from) {
+          twiml.message('That\'s your own number! Send the other person\'s number, or "done" to skip.');
+          return sendResponse();
+        }
+        // Send invite via WhatsApp — interactive with Join/Decline buttons
+        const userName = (user && user.name) || 'Someone';
+        const sharedList = setup.sharedCategories.join(', ');
+        const fallbackInvite = '👋 ' + userName + ' invited you to track expenses together on Budgy!\n\n' +
+          'Send *join ' + setup.householdId + '* to accept.\n\nShared categories: ' + sharedList;
+        sendWhatsAppInteractive(invitePhone, 'household_invite_msg',
+          { '1': userName, '2': setup.householdId, '3': sharedList }, fallbackInvite
+        ).catch(err => console.error('[household] invite send failed:', err.message));
+        pendingHouseholdSetup.delete(from);
+        twiml.message(
+          '✅ *Invite sent!*\n\n' +
+          '🔑 Code: *' + setup.householdId + '*\n' +
+          '📂 Shared: ' + setup.sharedCategories.join(', ') + '\n\n' +
+          'They\'ll get a WhatsApp message to join. You can also share the code directly.'
+        );
+        return sendResponse();
+      }
+
+      // Stage 1: waiting for shared category picks
       const picks = incomingMsg.split(/[,\s]+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= CATEGORIES.length);
       if (picks.length > 0) {
         const sharedCategories = [...new Set(picks.map(i => CATEGORIES[i - 1]))];
-        await updateUser(from, { householdId, sharedCategories });
-        pendingHouseholdSetup.delete(from);
-        twiml.message(
-          '✅ *Household created!*\n\n' +
-          '🔑 Code: *' + householdId + '*\n' +
-          'Share this with your family — they just send "join ' + householdId + '" to me.\n\n' +
-          '📂 *Shared categories:* ' + sharedCategories.join(', ') + '\n\n' +
-          'You can change these anytime with "add shared: Category" or "remove shared: Category".'
-        );
+        await updateUser(from, { householdId: setup.householdId, sharedCategories });
+        pendingHouseholdSetup.set(from, { ...setup, sharedCategories, stage: 'invite' });
+        const catList = sharedCategories.join(', ');
+        const fallbackMsg = '✅ *Household created!*\n\n📂 *Shared categories:* ' + catList +
+          '\n\nWant to invite someone? Send their phone number (e.g. 8220615883), or *done* to skip.';
+        // Send interactive buttons, respond with empty TwiML
+        sendWhatsAppInteractive(from, 'household_invite_step', { '1': catList }, fallbackMsg).catch(() => {});
       } else if (incomingMsg.toLowerCase() === 'cancel') {
         pendingHouseholdSetup.delete(from);
         twiml.message('Household setup cancelled.');
@@ -172,7 +217,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     // ── 0e. Household commands ───────────────────────────────────────────
     const lower = incomingMsg.toLowerCase().trim();
 
-    if (lower === 'create household' || lower === 'create family') {
+    if (/^(create|add)\s+(household|family)$/i.test(lower)) {
       const existing = await getUser(from);
       if (existing && existing.householdId) {
         const members = await getHouseholdMembers(from);
@@ -192,8 +237,14 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       return sendResponse();
     }
 
-    if (lower.startsWith('join ')) {
-      const code = lower.replace('join ', '').trim();
+    // Handle join button payload (join_hh_xxxx) or text "join hh_xxxx"
+    const joinPayload = buttonPayload.startsWith('join_') ? buttonPayload.replace('join_', '') : null;
+    if (joinPayload === 'hh_decline' || buttonPayload === 'hh_decline') {
+      twiml.message('No worries! You can always join later by sending "join <code>".');
+      return sendResponse();
+    }
+    if (joinPayload || lower.startsWith('join ')) {
+      const code = joinPayload || lower.replace('join ', '').trim();
       if (!code.startsWith('hh_')) {
         // Not a household code — fall through to normal parsing
       } else {
@@ -326,8 +377,9 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       const expired = elapsed > 60 * 60 * 1000; // 1h timeout
 
       if (!expired && setup.stage === 'cc_asked') {
-        const isYes = /^(yes|yeah|yep|yea|ya|sure|i do|i have|yup|haan|ha)\b/i.test(lower);
-        const isNo = /^(no|nope|nah|don't|i don't|not really|nahi)\b/i.test(lower);
+        const isYes = buttonPayload === 'cc_yes' || /^(yes|yeah|yep|yea|ya|sure|i do|i have|yup|haan|ha)\b/i.test(lower);
+        const isNo = buttonPayload === 'cc_no' || /^(no|nope|nah|don't|i don't|not really|nahi)\b/i.test(lower);
+        const isLater = buttonPayload === 'cc_later';
         if (isYes) {
           // Check if they included card details in the same message
           const parsed = parseStatementInput(incomingMsg);
@@ -374,7 +426,41 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
           pendingSetup.delete(from);
           // Fall through to normal processing
         }
-        // Neither yes nor no — clear state, process normally
+        if (isLater) {
+          pendingSetup.delete(from);
+          // Don't mark hint as sent — will ask again later
+        }
+        // Neither yes nor no nor later — clear state, process normally
+        if (pendingSetup.has(from) && pendingSetup.get(from).stage === 'cc_asked') pendingSetup.delete(from);
+      } else if (!expired && setup.stage === 'salary_asked') {
+        // Handle salary button payloads
+        if (buttonPayload === 'salary_last') {
+          await updateUser(from, { salaryType: 'last', salaryDay: null });
+          pendingSetup.delete(from);
+          twiml.message(await composeResponse('salary_set', { label: 'end of month' }, user));
+          return sendResponse();
+        } else if (buttonPayload === 'salary_last_working') {
+          await updateUser(from, { salaryType: 'last_working', salaryDay: null });
+          pendingSetup.delete(from);
+          twiml.message(await composeResponse('salary_set', { label: 'last working day' }, user));
+          return sendResponse();
+        } else if (buttonPayload === 'salary_fixed') {
+          pendingSetup.set(from, { stage: 'salary_day', askedAt: new Date() });
+          twiml.message('Which date? Just send the number (e.g. *26*).');
+          return sendResponse();
+        }
+        // No button — fall through (parser handles "salary 26" naturally)
+        pendingSetup.delete(from);
+      } else if (!expired && setup.stage === 'salary_day') {
+        // User told us they have a fixed date, now sending the day number
+        const day = parseInt(incomingMsg);
+        if (!isNaN(day) && day >= 1 && day <= 31) {
+          await updateUser(from, { salaryType: 'fixed', salaryDay: day });
+          pendingSetup.delete(from);
+          twiml.message(await composeResponse('salary_set', { label: 'the ' + day + 'th' }, user));
+          return sendResponse();
+        }
+        // Didn't parse — clear and fall through
         pendingSetup.delete(from);
       } else if (!expired && setup.stage === 'cc_details') {
         // User should be providing card details
@@ -464,7 +550,13 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     if (pendingCategory.has(from)) {
       const pending = pendingCategory.get(from);
       const visibleCats = await getVisibleCategoriesForUser(from, user);
-      const choice = parseInt(incomingMsg);
+      // Handle list picker selection (buttonPayload = "cat_food___dining") or buttonText = "Food & Dining"
+      let choice = parseInt(incomingMsg);
+      if (isNaN(choice) && buttonPayload.startsWith('cat_')) {
+        // Match by buttonText (exact category name from list picker)
+        const matchIdx = visibleCats.findIndex(c => c === buttonText);
+        if (matchIdx >= 0) choice = matchIdx + 1;
+      }
 
       if (!isNaN(choice) && choice >= 1 && choice <= visibleCats.length) {
         pending.category = visibleCats[choice - 1];
@@ -515,7 +607,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     if (numMedia > 0 && mediaUrl) {
       const result = await parseExpenseFromImage(mediaUrl, mediaType, incomingMsg);
       const reply = await handleExpenseResult(result, incomingMsg || '[image]', from, user);
-      twiml.message(reply);
+      if (reply) twiml.message(reply);
       return sendResponse();
     }
 
@@ -561,7 +653,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     }
 
     const reply = await handleExpenseResult(result, incomingMsg, from, user);
-    twiml.message(reply);
+    if (reply) twiml.message(reply);
 
   } catch (err) {
     console.error('Webhook error:', err);
@@ -615,9 +707,13 @@ async function handleExpenseResult(result, raw, from, user) {
       pendingCategory.set(from, pending);
       const visibleCats = await getVisibleCategoriesForUser(from, user);
       const catList = visibleCats.map((c, i) => (i + 1) + '. ' + getCategoryEmoji(c) + ' ' + c).join('\n');
-      return await composeResponse('expense_low_confidence', {
+      const expDetail = '₹' + Number(amount).toLocaleString('en-IN') + (merchant ? ' @ ' + merchant : '');
+      const fallback = await composeResponse('expense_low_confidence', {
         amount, category, merchant, confidence, categoryList: catList
       }, user);
+      // Send list picker (max 10 items), fall back to text
+      sendWhatsAppInteractive(from, 'category_picker', { '1': expDetail }, fallback).catch(() => {});
+      return null;
     }
 
     await appendExpense(pending);
@@ -677,8 +773,11 @@ async function handleExpenseResult(result, raw, from, user) {
       hints.add('cc');
       setupHintsSent.set(from, hints);
       pendingSetup.set(from, { stage: 'cc_asked', askedAt: new Date() });
-      const expConfirmation = getCategoryEmoji(category) + ' ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '') + '\n' + (monthly.cycleLabel || 'This month') + ': ₹' + monthly.total;
-      return await composeResponse('setup_cc_ask', { expenseConfirmation: expConfirmation }, user);
+      const expConf = getCategoryEmoji(category) + ' ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '') + '\n' + (monthly.cycleLabel || 'This month') + ': ₹' + monthly.total;
+      const fallback = await composeResponse('setup_cc_ask', { expenseConfirmation: expConf }, user);
+      // Send interactive buttons — response goes async, return null to signal "already handled"
+      sendWhatsAppInteractive(from, 'cc_setup_ask', { '1': expConf }, fallback).catch(() => {});
+      return null;
     }
 
     // After CC setup or 5th expense, ask about salary (if not set and not asked before)
@@ -686,8 +785,10 @@ async function handleExpenseResult(result, raw, from, user) {
       hints.add('salary');
       setupHintsSent.set(from, hints);
       pendingSetup.set(from, { stage: 'salary_asked', askedAt: new Date() });
-      const expConfirmation = getCategoryEmoji(category) + ' ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '') + '\n' + (monthly.cycleLabel || 'This month') + ': ₹' + monthly.total;
-      return await composeResponse('setup_salary_ask_standalone', { expenseConfirmation: expConfirmation }, user);
+      const expConf = getCategoryEmoji(category) + ' ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '') + '\n' + (monthly.cycleLabel || 'This month') + ': ₹' + monthly.total;
+      const fallback = await composeResponse('setup_salary_ask_standalone', { expenseConfirmation: expConf }, user);
+      sendWhatsAppInteractive(from, 'salary_setup_ask', { '1': expConf }, fallback).catch(() => {});
+      return null;
     }
 
     return await composeResponse('expense_logged', {
