@@ -217,7 +217,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     // ── 0e. Household commands ───────────────────────────────────────────
     const lower = incomingMsg.toLowerCase().trim();
 
-    if (/^(create|add)\s+(household|family)$/i.test(lower)) {
+    if (/\b(create|add|start|setup|set\s*up)\s+(a\s+)?(household|family)\b/i.test(lower)) {
       const existing = await getUser(from);
       if (existing && existing.householdId) {
         const members = await getHouseholdMembers(from);
