@@ -9,8 +9,9 @@ const {
   getLastEntryInfo,
   getAllUsers,
   isWithinSessionWindow
-} = require('./sheets');
+} = require('./db');
 const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppTemplate, sendWhatsAppImageBroadcast } = require('./messaging');
+const { generateAllInsights } = require('./insights');
 
 // ─── Content Template SIDs (for outside 24h session window) ─────────────────
 const TEMPLATE_SIDS = {
@@ -371,7 +372,10 @@ const NUDGE_CHECKS = [
       sidKey: 'daily_nudge',
       buildVariables: function() { return {}; }
     },
-    check: async function() {
+    check: async function(user) {
+      // Skip if user already logged today — don't bug active users
+      var info = await getLastEntryInfo(user ? user.phone : null);
+      if (info.todayCount > 0) return null;
       var nudges = [
         "Hey! Any spends today worth logging? Drop me a message!",
         "Quick check-in. How's the wallet today? Log something?",
@@ -481,6 +485,36 @@ const NUDGE_CHECKS = [
       }).join('\n');
       return '*Spending Alert* (' + result.weeksOfData + ' weeks of data)\n\nOver baseline in:\n' +
         lines + '\n\nSend *summary* for the full picture.';
+    }
+  },
+  {
+    id: 'household_discovery',
+    description: 'Suggest household feature for solo users',
+    cadenceHours: 336,  // 2 weeks — fires once then very rarely
+    windowStart: 11,    // 11 AM IST
+    windowEnd: 12,
+    priority: 2,        // low — it's a suggestion, not urgent
+    template: {
+      sidKey: 'daily_nudge',  // reuse generic template for outside-24h
+      buildVariables: function() { return {}; }
+    },
+    check: async function(user) {
+      if (!user || !user.phone) return null;
+      // Only for solo users (no household)
+      if (user.householdId) return null;
+      // Only after 2+ weeks of usage
+      if (!user.joined) return null;
+      var joinedDate = new Date(user.joined);
+      var daysSinceJoin = (Date.now() - joinedDate.getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSinceJoin < 14) return null;
+      // Only if they have meaningful data
+      if ((user.expenseCount || 0) < 10) return null;
+      var msgs = [
+        "Did you know you can track expenses with your family? Send *create household* to start — your partner or family can join and you'll see shared spending together.",
+        "Quick tip — Budgy supports household tracking! Send *create household* and share the code with family. Shared categories (like groceries, rent) show up in everyone's summaries.",
+        "If you share expenses with family, you might like household mode. Send *create household* to get a code your family can join with. Shared categories get tracked together.",
+      ];
+      return msgs[Math.floor(Math.random() * msgs.length)];
     }
   },
   {
@@ -678,6 +712,18 @@ async function heartbeatTick() {
       } catch (err) {
         console.error('[heartbeat] ' + bestNudge.id + ' failed for ' + user.phone + ':', err.message);
       }
+    }
+    // 3. Insight generation — daily per user, fire-and-forget
+    // Generates weekly spending narratives + graph patterns for grounded conversations
+    const INSIGHTS_CADENCE_HOURS = 24;
+    for (const user of users) {
+      if (!user.phone) continue;
+      if ((user.expenseCount || 0) < 5) continue; // need meaningful data
+      var insightOverdue = getOverdueHours('_insights', user.phone, INSIGHTS_CADENCE_HOURS);
+      if (insightOverdue < 0) continue;
+      generateAllInsights(user.phone)
+        .then(function() { markSent('_insights', user.phone); })
+        .catch(function(err) { console.error('[heartbeat] insight generation failed for', user.phone, err.message); });
     }
   } catch (err) {
     console.error('[heartbeat] tick failed:', err.message);

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#25D366"/>
+      <stop offset="100%" style="stop-color:#128C7E"/>
+    </linearGradient>
+    <linearGradient id="wallet" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFFFFF"/>
+      <stop offset="100%" style="stop-color:#E8F5E9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Circular background -->
+  <circle cx="256" cy="256" r="256" fill="url(#bg)"/>
+
+  <!-- Chat bubble shape (outer) -->
+  <path d="M 130 160
+           Q 130 120, 170 120
+           L 342 120
+           Q 382 120, 382 160
+           L 382 300
+           Q 382 340, 342 340
+           L 220 340
+           L 170 390
+           L 180 340
+           L 170 340
+           Q 130 340, 130 300 Z"
+        fill="white" opacity="0.95"/>
+
+  <!-- Wallet body -->
+  <rect x="175" y="180" width="162" height="110" rx="12" ry="12" fill="url(#bg)" opacity="0.85"/>
+
+  <!-- Wallet flap -->
+  <path d="M 175 200
+           Q 175 180, 195 180
+           L 325 180
+           Q 337 180, 337 192
+           L 337 210
+           L 175 210 Z"
+        fill="#128C7E"/>
+
+  <!-- Wallet clasp/button -->
+  <circle cx="330" cy="245" r="14" fill="white" opacity="0.9"/>
+  <circle cx="330" cy="245" r="8" fill="#25D366"/>
+
+  <!-- Coin 1 (top right, partially behind wallet) -->
+  <circle cx="310" cy="155" r="28" fill="#FFC107" opacity="0.9"/>
+  <circle cx="310" cy="155" r="20" fill="#FFD54F" opacity="0.9"/>
+  <text x="310" y="162" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#F57F17" text-anchor="middle">₹</text>
+
+  <!-- Coin 2 (smaller, left) -->
+  <circle cx="195" cy="165" r="20" fill="#FFC107" opacity="0.85"/>
+  <circle cx="195" cy="165" r="14" fill="#FFD54F" opacity="0.85"/>
+  <text x="195" y="171" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#F57F17" text-anchor="middle">₹</text>
+
+  <!-- Money lines on wallet -->
+  <line x1="195" y1="235" x2="260" y2="235" stroke="white" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+  <line x1="195" y1="250" x2="240" y2="250" stroke="white" stroke-width="3" stroke-linecap="round" opacity="0.4"/>
+  <line x1="195" y1="265" x2="220" y2="265" stroke="white" stroke-width="3" stroke-linecap="round" opacity="0.3"/>
+</svg>

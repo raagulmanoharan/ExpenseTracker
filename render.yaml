@@ -9,12 +9,14 @@ services:
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: GOOGLE_SHEET_ID
+      - key: SUPABASE_URL
         sync: false
-      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+      - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: NODE_ENV
         value: production
+      - key: VOYAGE_API_KEY
+        sync: false
       - key: TEMPLATE_SID_SMART_NUDGE
         sync: false
       - key: TEMPLATE_SID_MORNING_FOLLOWUP

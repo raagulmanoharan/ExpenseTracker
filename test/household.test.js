@@ -1,17 +1,7 @@
-// Test household functions — pure functions + mocked Google Sheets API
-
-jest.mock('googleapis', () => ({
-  google: {
-    auth: { GoogleAuth: jest.fn() },
-    sheets: jest.fn(() => ({}))
-  }
-}));
-
-process.env.GOOGLE_SERVICE_ACCOUNT_JSON = '{"type":"service_account","project_id":"test"}';
-process.env.GOOGLE_SHEET_ID = 'test-sheet-id';
+// Test household functions — pure functions only (no DB mocking needed)
 
 const { isSharedCategory, CATEGORIES } = require('../constants');
-const { generateHouseholdId } = require('../sheets');
+const { generateHouseholdId } = require('../utils');
 
 describe('isSharedCategory', () => {
   test('returns false when no shared categories', () => {
@@ -52,7 +42,7 @@ describe('generateHouseholdId', () => {
   test('generates unique IDs', () => {
     const ids = new Set();
     for (let i = 0; i < 100; i++) ids.add(generateHouseholdId());
-    expect(ids.size).toBeGreaterThan(90); // very unlikely to have many collisions
+    expect(ids.size).toBeGreaterThan(90);
   });
 });
 

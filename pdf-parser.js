@@ -1,26 +1,6 @@
-const Anthropic = require('@anthropic-ai/sdk');
 const axios = require('axios');
+const { client, callWithRetry } = require('./anthropic-client');
 const { CATEGORIES, safeParseJSON, parseIndianDate } = require('./constants');
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-// Retry helper for transient Anthropic API errors (529 overloaded, 500, etc.)
-async function callWithRetry(fn, retries = 2) {
-  for (let i = 0; i <= retries; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      const status = err.status || err.statusCode || 0;
-      if (i < retries && (status === 529 || status === 500 || status === 503)) {
-        const delay = (i + 1) * 1000;
-        console.warn(`[anthropic] ${status} on attempt ${i + 1}, retrying in ${delay}ms...`);
-        await new Promise(r => setTimeout(r, delay));
-        continue;
-      }
-      throw err;
-    }
-  }
-}
 
 function buildPdfSystemPrompt(user) {
   const cards = user?.statementDates ? Object.keys(user.statementDates) : [];

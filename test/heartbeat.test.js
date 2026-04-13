@@ -23,7 +23,7 @@ const fs = require('fs');
 
 // Mock dependencies
 jest.mock('node-cron', () => ({ schedule: jest.fn() }));
-jest.mock('../sheets', () => ({
+jest.mock('../db', () => ({
   getMonthlySummary: jest.fn(),
   getWeeklySummary: jest.fn(),
   getOverspendAlerts: jest.fn(),
@@ -41,7 +41,7 @@ jest.mock('../messaging', () => ({
   sendWhatsAppImageBroadcast: jest.fn(),
 }));
 
-const { isWithinSessionWindow } = require('../sheets');
+const { isWithinSessionWindow } = require('../db');
 const { sendWhatsAppTo, sendWhatsAppTemplate } = require('../messaging');
 
 describe('Heartbeat Engine', () => {
@@ -50,8 +50,8 @@ describe('Heartbeat Engine', () => {
   });
 
   describe('NUDGE_CHECKS registry', () => {
-    test('has 8 check definitions', () => {
-      expect(NUDGE_CHECKS).toHaveLength(8);
+    test('has 9 check definitions', () => {
+      expect(NUDGE_CHECKS).toHaveLength(9);
     });
 
     test('each check has required fields', () => {

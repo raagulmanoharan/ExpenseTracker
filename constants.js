@@ -7,6 +7,31 @@ const CATEGORIES = [
   'Credit Card Payment', 'Other'
 ];
 
+// New users see only these 6 universal categories.
+// As they log expenses in other categories, those categories become visible.
+const BASE_CATEGORIES = [
+  'Food & Dining', 'Food Delivery', 'Groceries',
+  'Transport', 'Shopping', 'Other'
+];
+
+/**
+ * Returns the categories a user should see — starts with BASE_CATEGORIES,
+ * expands as they log expenses in other categories.
+ * @param {object|null} user - user profile (unused for now, future personalization)
+ * @param {Array} expenseHistory - raw sheet rows (each row[3] = category)
+ * @returns {string[]} ordered subset of CATEGORIES
+ */
+function getVisibleCategories(user, expenseHistory) {
+  if (!user || !expenseHistory || expenseHistory.length === 0) return BASE_CATEGORIES;
+  const visible = new Set(BASE_CATEGORIES);
+  for (const row of expenseHistory) {
+    const cat = row[3] || 'Other';
+    if (CATEGORIES.includes(cat)) visible.add(cat);
+  }
+  // Return in the canonical CATEGORIES order
+  return CATEGORIES.filter(c => visible.has(c));
+}
+
 const COMMITTED_CATEGORIES = new Set([
   'Rent', 'Loan EMI', 'Investments', 'Family Transfer', 'Utilities', 'Subscriptions', 'Credit Card Payment'
 ]);
@@ -57,9 +82,11 @@ function isSharedCategory(category, sharedCategories) {
 
 module.exports = {
   CATEGORIES,
+  BASE_CATEGORIES,
   COMMITTED_CATEGORIES,
   isCommitted,
   isSharedCategory,
+  getVisibleCategories,
   getMonthName,
   parseIndianDate,
   safeParseJSON,

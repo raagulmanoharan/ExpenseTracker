@@ -1,5 +1,6 @@
 const {
-  CATEGORIES, isCommitted, getMonthName, parseIndianDate, safeParseJSON, getCategoryEmoji
+  CATEGORIES, BASE_CATEGORIES, isCommitted, getMonthName, parseIndianDate,
+  safeParseJSON, getCategoryEmoji, getVisibleCategories
 } = require('../constants');
 
 describe('CATEGORIES', () => {
@@ -103,5 +104,66 @@ describe('getMonthName', () => {
     const name = getMonthName();
     expect(typeof name).toBe('string');
     expect(name.length).toBeGreaterThan(0);
+  });
+});
+
+describe('BASE_CATEGORIES', () => {
+  test('has 6 universal categories', () => {
+    expect(BASE_CATEGORIES).toHaveLength(6);
+  });
+
+  test('is a subset of CATEGORIES', () => {
+    for (const cat of BASE_CATEGORIES) {
+      expect(CATEGORIES).toContain(cat);
+    }
+  });
+
+  test('includes Other', () => {
+    expect(BASE_CATEGORIES).toContain('Other');
+  });
+});
+
+describe('getVisibleCategories', () => {
+  test('returns BASE_CATEGORIES for new user with no history', () => {
+    expect(getVisibleCategories(null, null)).toEqual(BASE_CATEGORIES);
+    expect(getVisibleCategories({}, [])).toEqual(BASE_CATEGORIES);
+    expect(getVisibleCategories({ name: 'Test' }, [])).toEqual(BASE_CATEGORIES);
+  });
+
+  test('expands when user has logged non-base categories', () => {
+    const history = [
+      ['01/04/2026', '10:00', '500', 'Rent', 'Landlord', '', '', '+91'],
+      ['02/04/2026', '11:00', '200', 'Food & Dining', 'Cafe', '', '', '+91'],
+    ];
+    const visible = getVisibleCategories({ name: 'Test' }, history);
+    expect(visible).toContain('Rent');
+    expect(visible).toContain('Food & Dining');
+    // Still has base categories
+    expect(visible).toContain('Other');
+    expect(visible).toContain('Transport');
+  });
+
+  test('preserves CATEGORIES order', () => {
+    const history = [
+      ['01/04/2026', '10:00', '500', 'Rent', '', '', '', '+91'],
+      ['02/04/2026', '11:00', '200', 'Entertainment', '', '', '', '+91'],
+    ];
+    const visible = getVisibleCategories({}, history);
+    const rentIdx = visible.indexOf('Rent');
+    const entIdx = visible.indexOf('Entertainment');
+    expect(rentIdx).toBeGreaterThan(-1);
+    expect(entIdx).toBeGreaterThan(-1);
+    // Rent comes before Entertainment in CATEGORIES
+    expect(rentIdx).toBeGreaterThan(entIdx);
+    // Entertainment (index 5 in CATEGORIES) comes before Rent (index 8)
+  });
+
+  test('ignores unknown categories in history', () => {
+    const history = [
+      ['01/04/2026', '10:00', '500', 'MadeUpCategory', '', '', '', '+91'],
+    ];
+    const visible = getVisibleCategories({}, history);
+    expect(visible).toEqual(BASE_CATEGORIES);
+    expect(visible).not.toContain('MadeUpCategory');
   });
 });

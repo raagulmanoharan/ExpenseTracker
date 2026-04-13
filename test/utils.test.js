@@ -1,22 +1,11 @@
-// Test pure functions from sheets.js that don't need Google Sheets API
-// We mock the Google API to prevent real network calls during require()
-
-jest.mock('googleapis', () => ({
-  google: {
-    auth: { GoogleAuth: jest.fn() },
-    sheets: jest.fn(() => ({}))
-  }
-}));
-
-// Must set env vars before requiring sheets.js
-process.env.GOOGLE_SERVICE_ACCOUNT_JSON = '{"type":"service_account","project_id":"test"}';
-process.env.GOOGLE_SHEET_ID = 'test-sheet-id';
+// Test pure computation functions from utils.js (extracted from sheets.js)
+// No Google Sheets or Supabase mocking needed — these are pure functions.
 
 const {
   parseSalaryInput, parseStatementInput, getDaysUntilStatement,
   getBillingCycleAdvice, getSalaryCycleBounds, computeUserCycleBounds,
   isWithinSessionWindow
-} = require('../sheets');
+} = require('../utils');
 
 describe('parseSalaryInput', () => {
   test('parses numeric day', () => {
@@ -68,6 +57,36 @@ describe('parseStatementInput', () => {
 
   test('returns empty for invalid input', () => {
     expect(parseStatementInput('hello')).toEqual({});
+  });
+
+  test('rejects bank SMS with "debited"', () => {
+    expect(parseStatementInput('ICICI Bank Acct XX999 debited for Rs 163.00 on 12-Apr-26')).toEqual({});
+  });
+
+  test('rejects bank SMS with "credited"', () => {
+    expect(parseStatementInput('Your a/c XX123 credited with Rs 50000.00')).toEqual({});
+  });
+
+  test('rejects bank SMS with "transaction"', () => {
+    expect(parseStatementInput('Transaction of Rs 500 on your card ending 1234')).toEqual({});
+  });
+
+  test('rejects bank SMS with UPI keywords', () => {
+    expect(parseStatementInput('UPI txn of Rs 250 to MERCHANT ref 123456')).toEqual({});
+  });
+
+  test('rejects messages with Rs amount pattern', () => {
+    expect(parseStatementInput('Paid Rs 1500 via NEFT')).toEqual({});
+  });
+
+  test('rejects messages with "balance"', () => {
+    expect(parseStatementInput('Your balance is Rs 25000. Last txn Rs 163')).toEqual({});
+  });
+
+  test('still parses valid statement input after rejection checks', () => {
+    expect(parseStatementInput('HSBC 5')).toEqual({ HSBC: 5 });
+    expect(parseStatementInput('AMEX 12, AXIS 18')).toEqual({ AMEX: 12, AXIS: 18 });
+    expect(parseStatementInput('5')).toEqual({ _single: 5 });
   });
 });
 

@@ -1,22 +1,26 @@
 require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
-const { CATEGORIES, getCategoryEmoji, getMonthName } = require('./constants');
+const { CATEGORIES, getCategoryEmoji, getMonthName, getVisibleCategories } = require('./constants');
 const { parseExpense, parseExpenseFromImage } = require('./parser');
 const { parsePDFStatement, deduplicateTransactions } = require('./pdf-parser');
 const {
   initSheet, appendExpense, batchAppendExpenses, getAllRows,
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
   getBudgets, suggestBudgets, getBudgetStatus,
-  checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteRowByIndex, bulkRecategorize,
+  checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteExpenseById, bulkRecategorize,
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount,
   updateLastMessageAt,
   parseSalaryInput, parseStatementInput, getBillingCycleAdvice,
-  getHouseholdRows, getHouseholdMembers, createHousehold, joinHousehold, leaveHousehold, updateSharedCategories
-} = require('./sheets');
+  getHouseholdRows, getHouseholdMembers, createHousehold, joinHousehold, leaveHousehold, updateSharedCategories,
+  getRecentExpensesWithIds, getExpensesForExport,
+  getSpendingContext
+} = require('./db');
 const { scheduleHeartbeat, buildWeeklyDigest } = require('./scheduler');
 const { sendWhatsAppTo, sendWhatsAppImageTo } = require('./messaging');
 const { handleConversation } = require('./conversation');
+const { composeResponse } = require('./responder');
+const { searchNarratives } = require('./insights');
 
 const app = express();
 app.use(express.urlencoded({ extended: false, verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
@@ -28,9 +32,10 @@ const MessagingResponse = twilio.twiml.MessagingResponse;
 const pendingCategory = new Map(); // low-confidence expense awaiting category pick
 const pendingImport = new Map();   // PDF transactions awaiting confirmation
 const pendingOnboarding = new Map(); // new users being onboarded
-const pendingContextual = new Map(); // contextual questions (salary, card, statement)
 const pendingHouseholdSetup = new Map(); // awaiting shared category selection
 const pendingSharedCategoryReset = new Map(); // awaiting full shared category reset
+const pendingSetup = new Map();    // progressive CC/salary setup: { stage, askedAt }
+const setupHintsSent = new Map();  // phone → Set('cc', 'salary') — tracks what's been asked
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 const startedAt = new Date();
@@ -83,10 +88,11 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
 
   console.log(`[${new Date().toISOString()}] ${from} | ${mediaType || 'text'} | "${incomingMsg.substring(0, 100)}"`);
 
+  let user = null;
   try {
 
     // ── 0. New user detection — onboarding ────────────────────────────────
-    let user = await getUser(from);
+    user = await getUser(from);
 
     // Track last message time for WhatsApp 24h session window
     if (user) {
@@ -108,63 +114,21 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
         if (name.length > 0 && name.length < 50) {
           await createUser(from, name);
           pendingOnboarding.delete(from);
-          twiml.message('Nice to meet you, ' + name + '!\n\nSend me any expense to get started — just type it naturally.\n\n"lunch 280 Swiggy"   "auto 80"   "groceries 1200"\n\nOr send a receipt photo or bank SMS screenshot. That\'s all!');
+          const welcome = await composeResponse('onboarding_name_received', { name }, null);
+          twiml.message(welcome);
         } else {
           twiml.message("What's your name? (just your first name is fine)");
         }
         return sendResponse();
       } else {
         pendingOnboarding.set(from, true);
-        twiml.message("Hey! I\'m Budgy — your personal expense tracker on WhatsApp.\n\nWhat\'s your name?");
+        const greeting = await composeResponse('onboarding_welcome', {}, null);
+        twiml.message(greeting);
         return sendResponse();
       }
     }
 
-    // ── 0b. Contextual question replies ──────────────────────────────────
-    if (pendingContextual.has(from)) {
-      const ctx = pendingContextual.get(from);
-
-      if (ctx.type === 'salary') {
-        const parsed = parseSalaryInput(incomingMsg);
-        if (parsed) {
-          await updateUser(from, { salaryType: parsed.type, salaryDay: parsed.day || 0 });
-          pendingContextual.delete(from);
-          const label = parsed.type === 'fixed' ? 'the ' + parsed.day + 'th' :
-                        parsed.type === 'last' ? 'end of month' : 'last working day';
-          twiml.message('Got it — salary on ' + label + '. Summaries will now use your real month boundaries.');
-        } else {
-          twiml.message('Just reply with a number like "26", or "last" for end of month, or "last working day".');
-        }
-        return sendResponse();
-      }
-
-      if (ctx.type === 'statement') {
-        const parsed = parseStatementInput(incomingMsg);
-        const cardName = ctx.card;
-        const user2 = await getUser(from);
-        const dates = Object.assign({}, user2.statementDates || {});
-
-        if (parsed && parsed._single !== undefined) {
-          if (cardName) dates[cardName.toUpperCase()] = parsed._single;
-          await updateUser(from, { statementDates: dates });
-          pendingContextual.delete(from);
-          twiml.message('Saved! ' + (cardName || 'Card') + ' statement generates on the ' + parsed._single + 'th each month. I can now help you time big purchases for max interest-free days.');
-        } else if (parsed && Object.keys(parsed).length > 0) {
-          Object.assign(dates, parsed);
-          await updateUser(from, { statementDates: dates });
-          pendingContextual.delete(from);
-          const summary = Object.entries(dates).map(function(e) { return e[0] + ': ' + e[1] + 'th'; }).join(', ');
-          twiml.message('Saved! Statement dates — ' + summary + '.\n\nNow I can help you time big purchases for maximum interest-free days.');
-        } else {
-          twiml.message('Just reply with the date number, e.g. "5" or "HSBC 5, AMEX 12".');
-        }
-        return sendResponse();
-      }
-
-      pendingContextual.delete(from);
-    }
-
-    // ── 0c. Household setup — shared category selection ──────────────────
+    // ── 0b. Household setup — shared category selection ──────────────────
     if (pendingHouseholdSetup.has(from)) {
       const { householdId } = pendingHouseholdSetup.get(from);
       const picks = incomingMsg.split(/[,\s]+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= CATEGORIES.length);
@@ -355,6 +319,106 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       return sendResponse();
     }
 
+    // ── 0f. Progressive setup — soft CC/salary prompts ─────────────────
+    if (pendingSetup.has(from)) {
+      const setup = pendingSetup.get(from);
+      const elapsed = Date.now() - (setup.askedAt ? setup.askedAt.getTime() : 0);
+      const expired = elapsed > 60 * 60 * 1000; // 1h timeout
+
+      if (!expired && setup.stage === 'cc_asked') {
+        const isYes = /^(yes|yeah|yep|yea|ya|sure|i do|i have|yup|haan|ha)\b/i.test(lower);
+        const isNo = /^(no|nope|nah|don't|i don't|not really|nahi)\b/i.test(lower);
+        if (isYes) {
+          // Check if they included card details in the same message
+          const parsed = parseStatementInput(incomingMsg);
+          if (parsed && !parsed._single && Object.keys(parsed).length > 0) {
+            // They gave details — save them
+            const userForStmt = await getUser(from);
+            const dates = Object.assign({}, (userForStmt && userForStmt.statementDates) || {}, parsed);
+            await updateUser(from, { statementDates: dates });
+            pendingSetup.delete(from);
+            const summary = Object.entries(dates).map(e => e[0] + ': ' + e[1] + 'th').join(', ');
+            const hints = setupHintsSent.get(from) || new Set();
+            hints.add('cc');
+            setupHintsSent.set(from, hints);
+            // Ask about salary next if not set
+            if (!userForStmt || !userForStmt.salaryType) {
+              const reply = await composeResponse('setup_salary_ask', { statementConfirmation: 'Saved! Statement dates — ' + summary + '.' }, user);
+              pendingSetup.set(from, { stage: 'salary_asked', askedAt: new Date() });
+              hints.add('salary');
+              twiml.message(reply);
+              return sendResponse();
+            }
+            twiml.message('Saved! Statement dates — ' + summary + '. I can now help you time big purchases.');
+            return sendResponse();
+          }
+          // They said yes but no details — explain and ask
+          pendingSetup.set(from, { stage: 'cc_details', askedAt: new Date() });
+          const reply = await composeResponse('setup_cc_explain', {}, user);
+          twiml.message(reply);
+          return sendResponse();
+        } else if (isNo) {
+          pendingSetup.delete(from);
+          const hints = setupHintsSent.get(from) || new Set();
+          hints.add('cc');
+          setupHintsSent.set(from, hints);
+          // Ask about salary if not set
+          if (!user.salaryType) {
+            pendingSetup.set(from, { stage: 'salary_asked', askedAt: new Date() });
+            hints.add('salary');
+            const reply = await composeResponse('setup_cc_skipped', {}, user);
+            twiml.message(reply);
+            return sendResponse();
+          }
+          // Both done
+          pendingSetup.delete(from);
+          // Fall through to normal processing
+        }
+        // Neither yes nor no — clear state, process normally
+        pendingSetup.delete(from);
+      } else if (!expired && setup.stage === 'cc_details') {
+        // User should be providing card details
+        const parsed = parseStatementInput(incomingMsg);
+        if (parsed && Object.keys(parsed).filter(k => k !== '_single').length > 0) {
+          const userForStmt = await getUser(from);
+          const dates = Object.assign({}, (userForStmt && userForStmt.statementDates) || {}, parsed);
+          await updateUser(from, { statementDates: dates });
+          pendingSetup.delete(from);
+          const summary = Object.entries(dates).map(e => e[0] + ': ' + e[1] + 'th').join(', ');
+          const hints = setupHintsSent.get(from) || new Set();
+          hints.add('cc');
+          setupHintsSent.set(from, hints);
+          if (!userForStmt || !userForStmt.salaryType) {
+            pendingSetup.set(from, { stage: 'salary_asked', askedAt: new Date() });
+            hints.add('salary');
+            const reply = await composeResponse('setup_salary_ask', { statementConfirmation: 'Saved! Statement dates — ' + summary + '.' }, user);
+            twiml.message(reply);
+            return sendResponse();
+          }
+          twiml.message('Saved! Statement dates — ' + summary + '. I can now help you time big purchases.');
+          return sendResponse();
+        }
+        // Didn't parse as statement dates — try to parse naturally via Claude
+        // Fall through to normal processing but keep state for one more try
+        pendingSetup.delete(from);
+      } else {
+        // Expired or salary_asked — clear state, process normally
+        // (salary responses like "salary 26" are handled by the parser naturally)
+        pendingSetup.delete(from);
+      }
+    }
+
+    // ── 0g. Export command ────────────────────────────────────────────────
+    if (lower === 'export' || lower === 'export my expenses' || lower === 'download') {
+      const crypto = require('crypto');
+      const token = crypto.randomUUID();
+      exportTokens.set(token, { phone: from, expires: Date.now() + 10 * 60 * 1000 }); // 10 min
+      const baseUrl = process.env.WEBHOOK_URL || `https://${req.get('host')}`;
+      const exportUrl = baseUrl + '/export/' + token;
+      twiml.message('📥 Here\'s your export link (valid for 10 minutes):\n\n' + exportUrl + '\n\nThis will download a CSV with all your expenses.');
+      return sendResponse();
+    }
+
     // ── 1. PDF import confirmation ────────────────────────────────────────
     if (pendingImport.has(from)) {
       const { toAdd } = pendingImport.get(from);
@@ -386,40 +450,53 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       await batchAppendExpenses(selected, from);
       pendingImport.delete(from);
       const monthly = await getMonthlySummary(from);
-      twiml.message(
-        `✅ *${selected.length} transaction${selected.length > 1 ? 's' : ''} imported!*\n\n` +
-        `📊 *${getMonthName()} so far: ₹${monthly.total}*\n${monthly.breakdown}` +
-        monthly.discretionarySplit
-      );
+      const importReply = await composeResponse('import_complete', {
+        count: selected.length,
+        monthlyTotal: monthly.total,
+        breakdown: monthly.breakdown,
+        discretionarySplit: monthly.discretionarySplit
+      }, user);
+      twiml.message(importReply);
       return sendResponse();
     }
 
     // ── 2. Category pick (low confidence) ────────────────────────────────
     if (pendingCategory.has(from)) {
       const pending = pendingCategory.get(from);
+      const visibleCats = await getVisibleCategoriesForUser(from, user);
       const choice = parseInt(incomingMsg);
 
-      if (!isNaN(choice) && choice >= 1 && choice <= CATEGORIES.length) {
-        pending.category = CATEGORIES[choice - 1];
+      if (!isNaN(choice) && choice >= 1 && choice <= visibleCats.length) {
+        pending.category = visibleCats[choice - 1];
         pendingCategory.delete(from);
         await appendExpense(pending);
-        const monthly = await getMonthlySummary(from);
-        const overspend = await getOverspendAlerts(from);
-        let reply = buildLoggedReply(pending, monthly);
-        if (overspend) reply += formatOverspendAlert(overspend);
+        const [monthly, overspend] = await Promise.all([
+          getMonthlySummary(from),
+          getOverspendAlerts(from)
+        ]);
+        const reply = await composeResponse('expense_logged', {
+          amount: pending.amount, category: pending.category, merchant: pending.merchant,
+          note: pending.note, monthlyTotal: monthly.total, monthlyCount: monthly.count,
+          cycleLabel: monthly.cycleLabel, breakdown: monthly.breakdown,
+          overspend: overspend ? overspend.alerts.map(a => a.category + ' +' + a.pct + '%').join(', ') : null
+        }, user);
         twiml.message(reply);
       } else if (incomingMsg.toLowerCase() === 'cancel') {
         pendingCategory.delete(from);
         twiml.message("👍 Cancelled.");
       } else {
-        twiml.message(buildCategoryPrompt(pending));
+        const catList = visibleCats.map((c, i) => (i + 1) + '. ' + getCategoryEmoji(c) + ' ' + c).join('\n');
+        twiml.message('💸 ₹' + Number(pending.amount).toLocaleString('en-IN') +
+          (pending.merchant ? ' @ ' + pending.merchant : '') +
+          '\nWhich category?\n\n' + catList + '\n\nReply with a number or *cancel*');
       }
       return sendResponse();
     }
 
     // ── 3. No content ─────────────────────────────────────────────────────
     if (!incomingMsg && numMedia === 0) {
-      twiml.message(helpText());
+      const helpReply = await composeResponse('help', {}, user);
+      twiml.message(helpReply);
       return sendResponse();
     }
 
@@ -449,13 +526,15 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     if (result.type === 'suggest_budgets') {
       const suggestion = await suggestBudgets(from);
       if (!suggestion.ready) {
-        twiml.message('📊 Not enough data yet — need at least 2 full weeks.\n\nYou have ' + suggestion.weeksLogged + ' complete week(s) logged. Keep going!');
+        const reply = await composeResponse('suggest_budgets_not_ready', { weeksLogged: suggestion.weeksLogged }, user);
+        twiml.message(reply);
       } else {
         const lines = suggestion.suggestions.map(s => {
           const tag = s.committed ? ' 🔒' : '';
           return getCategoryEmoji(s.category) + ' *' + s.category + tag + '*\n  Avg: ₹' + s.avgMonthly.toLocaleString('en-IN') + '/mo → Suggested: ₹' + s.suggested.toLocaleString('en-IN') + '/mo';
         }).join('\n\n');
-        twiml.message('💡 *Budget Suggestions* (' + suggestion.weeksLogged + ' weeks of data)\nSet 10% below your run-rate — a realistic starting point.\n\n' + lines + '\n\n🔒 = committed (harder to cut)');
+        const reply = await composeResponse('suggest_budgets', { weeksLogged: suggestion.weeksLogged, suggestions: lines }, user);
+        twiml.message(reply);
       }
       return sendResponse();
     }
@@ -486,7 +565,8 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
 
   } catch (err) {
     console.error('Webhook error:', err);
-    twiml.message('⚠️ Something went wrong. Try again!');
+    const errReply = await composeResponse('error', {}, user).catch(() => '⚠️ Something went wrong. Try again!');
+    twiml.message(errReply);
   }
 
   sendResponse();
@@ -504,9 +584,10 @@ async function processPDFAsync(from, mediaUrl, user) {
   const { toAdd, duplicates } = deduplicateTransactions(parsed, allRows);
 
   if (toAdd.length === 0) {
-    await sendWhatsAppTo(from,
-      `✅ All ${parsed.length} transactions already logged! ${duplicates.length} duplicate${duplicates.length > 1 ? 's' : ''} skipped.`
-    );
+    const noneReply = await composeResponse('import_none', {
+      total: parsed.length, duplicates: duplicates.length
+    }, user);
+    await sendWhatsAppTo(from, noneReply);
     return;
   }
 
@@ -532,7 +613,11 @@ async function handleExpenseResult(result, raw, from, user) {
 
     if (confidence < 60) {
       pendingCategory.set(from, pending);
-      return buildCategoryPrompt(pending, confidence);
+      const visibleCats = await getVisibleCategoriesForUser(from, user);
+      const catList = visibleCats.map((c, i) => (i + 1) + '. ' + getCategoryEmoji(c) + ' ' + c).join('\n');
+      return await composeResponse('expense_low_confidence', {
+        amount, category, merchant, confidence, categoryList: catList
+      }, user);
     }
 
     await appendExpense(pending);
@@ -554,17 +639,10 @@ async function handleExpenseResult(result, raw, from, user) {
       });
     }).catch(() => {});
 
-    // Contextual trigger: after 3rd expense, ask about card if not set
-    try {
-      const expCount = await incrementExpenseCount(from);
-      const userForCtx = await getUser(from);
-      if (expCount === 3 && userForCtx && Object.keys(userForCtx.statementDates || {}).length === 0) {
-        pendingContextual.set(from, { type: 'statement', card: null });
-        // Will ask after sending the logged reply — append to reply below
-      }
-    } catch (e) { /* non-critical */ }
+    // Increment expense count (non-critical)
+    try { await incrementExpenseCount(from); } catch (e) { /* non-critical */ }
 
-    // Anomaly check
+    // Anomaly check + summary data
     const anomaly = await checkAnomaly(amount, category, from);
     const [monthly, overspend, budgetStatus] = await Promise.all([
       getMonthlySummary(from),
@@ -572,20 +650,8 @@ async function handleExpenseResult(result, raw, from, user) {
       getBudgetStatus(from)
     ]);
 
-    let reply = buildLoggedReply(pending, monthly);
-
-    // Anomaly alert
-    if (anomaly) {
-      if (anomaly.type === 'spike') {
-        reply += `\n\n🚨 *Unusual spend!* ₹${Number(amount).toLocaleString('en-IN')} is ${anomaly.multiple}x your usual ${category} amount (avg ₹${anomaly.avg.toLocaleString('en-IN')})`;
-      } else if (anomaly.type === 'high') {
-        reply += `\n\n🚨 *High spend!* ₹${Number(amount).toLocaleString('en-IN')} is your largest ever ${category} transaction (prev max ₹${anomaly.prev_max.toLocaleString('en-IN')})`;
-      } else if (anomaly.type === 'large') {
-        reply += `\n\n🚨 *Large transaction!* Is ₹${Number(amount).toLocaleString('en-IN')} expected?`;
-      }
-    }
-
-    // Budget check for this category
+    // Build budget warning string if applicable
+    let budgetWarning = null;
     if (budgetStatus) {
       const budgets = await getBudgets();
       if (budgets[category]) {
@@ -594,47 +660,71 @@ async function handleExpenseResult(result, raw, from, user) {
         const pct = Math.round((catMonthly / budget) * 100);
         if (pct >= 70) {
           const status = pct >= 100 ? '🔴 Over budget!' : '🟡 Nearing limit';
-          reply += `\n\n${status} *${category}:* ₹${Math.round(catMonthly).toLocaleString('en-IN')} of ₹${Math.round(budget).toLocaleString('en-IN')} (${pct}%)`;
+          budgetWarning = status + ' ' + category + ': ₹' + Math.round(catMonthly).toLocaleString('en-IN') + ' of ₹' + Math.round(budget).toLocaleString('en-IN') + ' (' + pct + '%)';
         }
       }
     }
 
-    if (overspend) reply += formatOverspendAlert(overspend);
+    // Check if we should trigger progressive setup
+    const freshUser = await getUser(from);
+    const expCount = freshUser ? (freshUser.expenseCount || 0) : 0;
+    const hints = setupHintsSent.get(from) || new Set();
+    const hasCC = freshUser && freshUser.statementDates && Object.keys(freshUser.statementDates).length > 0;
+    const hasSalary = freshUser && freshUser.salaryType;
 
-    // Append contextual question if triggered
-    if (pendingContextual.has(from) && pendingContextual.get(from).type === 'statement') {
-      reply += '\n\nQuick one — which credit cards do you use? And what date does the statement generate each month?\n(e.g. "HSBC 5, AMEX 12" or just "5" if you use one card)\n\nThis helps me tell you the best time to make big purchases.';
+    // After 3rd expense, ask about CC (if not set and not asked before)
+    if (expCount >= 3 && !hasCC && !hints.has('cc') && !pendingSetup.has(from)) {
+      hints.add('cc');
+      setupHintsSent.set(from, hints);
+      pendingSetup.set(from, { stage: 'cc_asked', askedAt: new Date() });
+      const expConfirmation = getCategoryEmoji(category) + ' ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '') + '\n' + (monthly.cycleLabel || 'This month') + ': ₹' + monthly.total;
+      return await composeResponse('setup_cc_ask', { expenseConfirmation: expConfirmation }, user);
     }
 
-    return reply;
+    // After CC setup or 5th expense, ask about salary (if not set and not asked before)
+    if (!hasSalary && !hints.has('salary') && !pendingSetup.has(from) && (hasCC || expCount >= 5)) {
+      hints.add('salary');
+      setupHintsSent.set(from, hints);
+      pendingSetup.set(from, { stage: 'salary_asked', askedAt: new Date() });
+      const expConfirmation = getCategoryEmoji(category) + ' ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '') + '\n' + (monthly.cycleLabel || 'This month') + ': ₹' + monthly.total;
+      return await composeResponse('setup_salary_ask_standalone', { expenseConfirmation: expConfirmation }, user);
+    }
+
+    return await composeResponse('expense_logged', {
+      amount, category, merchant, note,
+      monthlyTotal: monthly.total, monthlyCount: monthly.count,
+      cycleLabel: monthly.cycleLabel, breakdown: monthly.breakdown,
+      anomaly: anomaly || null,
+      budgetWarning,
+      overspend: overspend ? overspend.alerts.map(a => a.category + ' +' + a.pct + '%').join(', ') : null
+    }, user);
 
   } else if (result.type === 'summary_monthly') {
-    const monthly = await getMonthlySummary(from);
-    const budgetStatus = await getBudgetStatus(from);
-    let reply =
-      '*' + (monthly.cycleLabel || getMonthName()) + '*\n' +
-      '₹' + monthly.total + '  (' + monthly.count + ' transactions)\n\n' +
-      monthly.breakdown +
-      monthly.discretionarySplit;
-    if (budgetStatus) reply += '\n\n━━━━━━━━━━━━\n*Budgets*\n' + budgetStatus;
-
-    // Salary prompt removed — PAY_DATES_2026 fallback provides correct cycle bounds.
-    // Users can still set custom salary dates with "set salary <date>".
-
-    return reply;
+    const [monthly, budgetStatus] = await Promise.all([
+      getMonthlySummary(from),
+      getBudgetStatus(from)
+    ]);
+    return await composeResponse('summary_monthly', {
+      total: monthly.total, count: monthly.count,
+      cycleLabel: monthly.cycleLabel,
+      breakdown: monthly.breakdown,
+      discretionarySplit: monthly.discretionarySplit,
+      budgetStatus: budgetStatus || null
+    }, user);
 
   } else if (result.type === 'summary_weekly') {
     const weekly = await getWeeklySummary(from);
-    return (
-'*This Week*\n' +
-      '₹' + weekly.total + '  (' + weekly.count + ' transactions)\n\n' +
-      weekly.breakdown +
-      weekly.discretionarySplit
-    );
+    return await composeResponse('summary_weekly', {
+      total: weekly.total, count: weekly.count,
+      breakdown: weekly.breakdown,
+      discretionarySplit: weekly.discretionarySplit
+    }, user);
 
   } else if (result.type === 'undo') {
     const undone = await undoLast(from);
-    return `↩️ Removed: ₹${Number(undone.amount).toLocaleString('en-IN')} — ${undone.category}${undone.merchant ? ` @ ${undone.merchant}` : ''}`;
+    return await composeResponse('undo', {
+      amount: undone.amount, category: undone.category, merchant: undone.merchant
+    }, user);
 
   } else if (result.type === 'set_salary') {
     const parsed = parseSalaryInput(result.raw || raw);
@@ -642,7 +732,7 @@ async function handleExpenseResult(result, raw, from, user) {
       await updateUser(from, { salaryType: parsed.type, salaryDay: parsed.day || 0 });
       const label = parsed.type === 'fixed' ? 'the ' + parsed.day + 'th' :
                     parsed.type === 'last' ? 'end of month' : 'last working day';
-      return 'Got it — salary on ' + label + '. Summaries will now use your real month boundaries.';
+      return await composeResponse('salary_set', { label }, user);
     }
     return 'Could not parse that. Try "26", "last", or "last working day".';
 
@@ -651,36 +741,51 @@ async function handleExpenseResult(result, raw, from, user) {
     const userForStmt = await getUser(from);
     const dates = Object.assign({}, (userForStmt && userForStmt.statementDates) || {});
     if (parsed && parsed._single !== undefined) {
-      pendingContextual.set(from, { type: 'statement', card: null });
-      return 'Which card is this statement date for?';
+      // Single number without card name — ask them to include it (one-shot, no state)
+      return await composeResponse('statement_need_card', { day: parsed._single }, user);
     } else if (parsed && Object.keys(parsed).length > 0) {
       Object.assign(dates, parsed);
       await updateUser(from, { statementDates: dates });
       const summary = Object.entries(dates).map(function(e) { return e[0] + ': ' + e[1] + 'th'; }).join(', ');
-      return 'Saved! Statement dates — ' + summary + '.\n\nNow I can help you time big purchases for maximum interest-free days.';
+      return await composeResponse('statement_set', { summary }, user);
     }
-    return 'Could not parse that. Try "HSBC 5" or "HSBC 5, AMEX 12".';
+    return await composeResponse('statement_need_card', { day: null }, user);
 
   } else if (result.type === 'purchase_timing') {
     const userForPurchase = await getUser(from);
     const dates = (userForPurchase && userForPurchase.statementDates) || {};
     if (Object.keys(dates).length === 0) {
-      pendingContextual.set(from, { type: 'statement', card: null });
-      return 'To give you the best timing advice, I need your credit card statement dates first.\n\nWhich cards do you use and when does the statement generate? (e.g. "HSBC 5, AMEX 12")';
+      return await composeResponse('statement_need_card', { day: null, forPurchaseTiming: true }, user);
     }
     const advice = getBillingCycleAdvice(dates);
     const best = advice[0];
     const lines = advice.map(function(a) {
-      return getCategoryEmoji('Subscriptions').replace('📱','💳') + ' ' + a.card + ': statement in ' + a.daysUntilStatement + ' days → ~' + a.interestFreeDays + ' interest-free days if you buy today';
+      return '💳 ' + a.card + ': statement in ' + a.daysUntilStatement + ' days → ~' + a.interestFreeDays + ' interest-free days if you buy today';
     }).join('\n');
-    return '*Best time to make a big purchase:*\n\n' + lines + '\n\n' +
-      '*Best card right now:* ' + best.card + ' — ~' + best.interestFreeDays + ' interest-free days\n\n' +
-      'For maximum days, always buy the day *after* your statement generates.';
+    return await composeResponse('purchase_timing', {
+      advice: lines, bestCard: best.card, bestDays: best.interestFreeDays
+    }, user);
 
   } else {
-    // Conversational fallback — Claude reads expense data and answers naturally
-    const rows = await getHouseholdRows(from);
-    const conv = await handleConversation(raw, rows, user);
+    // Conversational fallback — Claude reads spending context and answers naturally
+    // Try compact insights from materialized views + narrative search; fall back to raw rows
+    let contextData;
+    try {
+      const [insights, narratives] = await Promise.all([
+        getSpendingContext(from),
+        searchNarratives(from, raw, 3).catch(() => [])
+      ]);
+      // Use insights if materialized views have data; otherwise fall back
+      if (insights.catProfiles && insights.catProfiles.length > 0) {
+        if (narratives.length > 0) insights.narratives = narratives;
+        contextData = insights;
+      } else {
+        contextData = await getRecentExpensesWithIds(from);
+      }
+    } catch {
+      contextData = await getRecentExpensesWithIds(from);
+    }
+    const conv = await handleConversation(raw, contextData, user);
 
     if (conv.type === 'answer') {
       return conv.text;
@@ -698,68 +803,69 @@ async function handleExpenseResult(result, raw, from, user) {
         return 'No entries to update.';
 
       } else if (conv.action === 'delete_row') {
-        await deleteRowByIndex(conv.rowIndex);
+        const expId = conv.expenseId || conv.rowIndex;
+        await deleteExpenseById(expId);
         return conv.text || 'Entry deleted.';
 
       } else if (conv.action === 'add_category') {
-        // Categories are baked into the parser — acknowledge and note
         return conv.text || 'Got it! Use that category name when logging and I will recognise it.';
 
       } else {
-        return conv.text || helpText();
+        return conv.text || await composeResponse('help', {}, user);
       }
 
     } else {
-      return helpText();
+      return await composeResponse('help', {}, user);
     }
   }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function buildLoggedReply(pending, monthly) {
-  const merchantLine = pending.merchant ? ' · ' + pending.merchant : '';
-  return (
-    '✅ *' + pending.category + merchantLine + '*\n' +
-    '₹' + Number(pending.amount).toLocaleString('en-IN') +
-    (pending.note ? '  _' + pending.note + '_' : '') + '\n' +
-    '\n━━━━━━━━━━━━\n' +
-    '*' + (monthly.cycleLabel || getMonthName()) + '*   ₹' + monthly.total + '\n' +
-    monthly.breakdown
-  );
+
+/**
+ * Get visible categories for a user — progressive disclosure.
+ * New users see 6 base categories; as they log more categories, those appear.
+ */
+async function getVisibleCategoriesForUser(phone, user) {
+  try {
+    const rows = await getAllRows(phone);
+    return getVisibleCategories(user, rows);
+  } catch {
+    return CATEGORIES; // fallback to full list
+  }
 }
 
-function buildCategoryPrompt(pending, confidence) {
-  const note = confidence !== undefined
-    ? `\n🤔 Not sure of category (${confidence}% confident). Pick one:\n`
-    : '\nWhich category?\n';
-  const list = CATEGORIES.map((c, i) => `${i + 1}. ${getCategoryEmoji(c)} ${c}`).join('\n');
-  return `💸 ₹${Number(pending.amount).toLocaleString('en-IN')}${pending.merchant ? ` @ ${pending.merchant}` : ''}${note}\n${list}\n\nReply with a number or *cancel*`;
-}
+// ─── CSV Export ──────────────────────────────────────────────────────────────
+// Token-based export: user sends "export" → gets a short-lived link → downloads CSV
+const exportTokens = new Map(); // token → { phone, expires }
 
-function formatOverspendAlert(overspend) {
-  const lines = overspend.alerts.map(a => getCategoryEmoji(a.category) + ' ' + a.category + '  +' + a.pct + '% vs avg').join('\n');
-  return '\n\n⚠️ *Heads up — running over in:*\n' + lines;
-}
+app.get('/export/:token', async (req, res) => {
+  const entry = exportTokens.get(req.params.token);
+  if (!entry || Date.now() > entry.expires) {
+    exportTokens.delete(req.params.token);
+    return res.status(404).send('Link expired or invalid. Send "export" to Budgy for a new one.');
+  }
 
-function helpText() {
-  return (
-    '👋 Send me:\n' +
-    '• "lunch 250 Swiggy" — log expense\n' +
-    '• Receipt or bank SMS screenshot 📸\n' +
-    '• Bank statement PDF 📄\n' +
-    '• summary — monthly total\n' +
-    '• this week — weekly breakdown\n' +
-    '• suggest budgets — after 2+ weeks of data\n' +
-    '• undo — remove last entry\n\n' +
-    '🏠 *Household:*\n' +
-    '• create household — start a family group\n' +
-    '• join <code> — join an existing household\n' +
-    '• my household — see members & settings\n' +
-    '• add shared: <category> — mark as shared\n' +
-    '• remove shared: <category> — mark as personal\n' +
-    '• leave household — leave the group'
-  );
-}
+  try {
+    const expenses = await getExpensesForExport(entry.phone);
+    const header = 'Date,Time,Amount,Category,Merchant,Note';
+    const rows = expenses.map(e => {
+      const esc = s => '"' + (s || '').replace(/"/g, '""') + '"';
+      return [e.date, e.time || '', e.amount, esc(e.category), esc(e.merchant), esc(e.note)].join(',');
+    });
+    const csv = header + '\n' + rows.join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="budgy-expenses.csv"');
+    res.send(csv);
+
+    // Consume token after use
+    exportTokens.delete(req.params.token);
+  } catch (err) {
+    console.error('Export failed:', err);
+    res.status(500).send('Export failed. Try again.');
+  }
+});
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
@@ -768,7 +874,7 @@ async function start() {
   await initSheet();
   await initUsersSheet();
   scheduleHeartbeat();
-  app.listen(PORT, () => console.log(`✅ Expense tracker v4 running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`✅ Budgy v5 (Supabase) running on port ${PORT}`));
 }
 
 start().catch(console.error);
