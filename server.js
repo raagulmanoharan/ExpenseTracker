@@ -80,6 +80,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
   const mediaType = (req.body.MediaContentType0 || '').toLowerCase();
   const buttonPayload = (req.body.ButtonPayload || '').trim();
   const buttonText = (req.body.ButtonText || '').trim();
+  const lower = incomingMsg.toLowerCase().trim();
   let responseSent = false;
 
   function sendResponse() {
@@ -215,8 +216,6 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     }
 
     // ── 0e. Household commands ───────────────────────────────────────────
-    const lower = incomingMsg.toLowerCase().trim();
-
     if (/\b(create|add|start|setup|set\s*up)\s+(a\s+)?(household|family)\b/i.test(lower)) {
       const existing = await getUser(from);
       if (existing && existing.householdId) {
