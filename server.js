@@ -13,7 +13,7 @@ const {
   updateLastMessageAt,
   parseSalaryInput, parseStatementInput, getBillingCycleAdvice,
   getHouseholdRows, getHouseholdMembers, createHousehold, joinHousehold, leaveHousehold, updateSharedCategories,
-  getRecentExpensesWithIds, getExpensesForExport,
+  getRecentExpensesWithIds, getHouseholdExpensesWithIds, getExpensesForExport,
   getSpendingContext
 } = require('./db');
 const { scheduleHeartbeat, buildWeeklyDigest } = require('./scheduler');
@@ -887,22 +887,26 @@ async function handleExpenseResult(result, raw, from, user) {
 
   } else {
     // Conversational fallback — Claude reads spending context and answers naturally
-    // Try compact insights from materialized views + narrative search; fall back to raw rows
+    // Household users get combined household rows (shared categories included).
+    // Solo users try compact insights from materialized views + narrative search; fall back to raw rows.
     let contextData;
-    try {
-      const [insights, narratives] = await Promise.all([
-        getSpendingContext(from),
-        searchNarratives(from, raw, 3).catch(() => [])
-      ]);
-      // Use insights if materialized views have data; otherwise fall back
-      if (insights.catProfiles && insights.catProfiles.length > 0) {
-        if (narratives.length > 0) insights.narratives = narratives;
-        contextData = insights;
-      } else {
+    if (user && user.householdId) {
+      contextData = await getHouseholdExpensesWithIds(from);
+    } else {
+      try {
+        const [insights, narratives] = await Promise.all([
+          getSpendingContext(from),
+          searchNarratives(from, raw, 3).catch(() => [])
+        ]);
+        if (insights.catProfiles && insights.catProfiles.length > 0) {
+          if (narratives.length > 0) insights.narratives = narratives;
+          contextData = insights;
+        } else {
+          contextData = await getRecentExpensesWithIds(from);
+        }
+      } catch {
         contextData = await getRecentExpensesWithIds(from);
       }
-    } catch {
-      contextData = await getRecentExpensesWithIds(from);
     }
     const conv = await handleConversation(raw, contextData, user);
 

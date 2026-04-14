@@ -104,6 +104,46 @@ async function getRecentExpensesWithIds(phone, limit = 200) {
   return (data || []).reverse();
 }
 
+// Household-aware version: own expenses + other members' shared-category expenses
+async function getHouseholdExpensesWithIds(phone, limit = 200) {
+  const user = await getUser(phone);
+  if (!user || !user.householdId) return getRecentExpensesWithIds(phone, limit);
+
+  const members = await getHouseholdMembers(phone);
+  const sharedCategories = user.sharedCategories || [];
+  const otherPhones = members.map(m => m.phone).filter(p => p !== phone);
+
+  // Own expenses
+  const ownQuery = supabase.from('expenses')
+    .select('id, date, time, amount, category, merchant, note, raw_message, phone')
+    .eq('phone', phone)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (otherPhones.length === 0 || sharedCategories.length === 0) {
+    const { data, error } = await ownQuery;
+    if (error) throw new Error('getHouseholdExpensesWithIds own failed: ' + error.message);
+    return (data || []).reverse();
+  }
+
+  // Other members' shared-category expenses
+  const sharedQuery = supabase.from('expenses')
+    .select('id, date, time, amount, category, merchant, note, raw_message, phone')
+    .in('phone', otherPhones)
+    .in('category', sharedCategories)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  const [ownResult, sharedResult] = await Promise.all([ownQuery, sharedQuery]);
+  if (ownResult.error) throw new Error('getHouseholdExpensesWithIds own failed: ' + ownResult.error.message);
+  if (sharedResult.error) throw new Error('getHouseholdExpensesWithIds shared failed: ' + sharedResult.error.message);
+
+  // Merge, sort by created order (desc), cap at limit, then reverse for chronological
+  const combined = [...(ownResult.data || []), ...(sharedResult.data || [])];
+  combined.sort((a, b) => (a.date + ' ' + a.time) < (b.date + ' ' + b.time) ? 1 : -1);
+  return combined.slice(0, limit).reverse();
+}
+
 // ─── Budgets ────────────────────────────────────────────────────────────────
 async function getBudgets(phone) {
   let query = supabase.from('budgets').select('category, monthly_budget');
@@ -822,7 +862,7 @@ module.exports = {
   initSheet, initUsersSheet,
   // Expenses
   appendExpense, batchAppendExpenses, getAllRows,
-  getRecentExpensesWithIds,
+  getRecentExpensesWithIds, getHouseholdExpensesWithIds,
   // Summaries
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
   getBudgets, suggestBudgets, getBudgetStatus,
