@@ -822,6 +822,25 @@ async function handleExpenseResult(result, raw, from, user) {
 
   } else if (result.type === 'undo') {
     const undone = await undoLast(from);
+
+    // Cross-notify household members when a shared expense is undone
+    getUser(from).then(u => {
+      if (!u || !u.householdId) return;
+      const shared = u.sharedCategories || [];
+      if (!shared.includes(undone.category)) return;
+      getHouseholdMembers(from).then(members => {
+        const others = members.filter(m => m.phone !== from);
+        const name = u.name || 'Someone';
+        const amt = Number(undone.amount).toLocaleString('en-IN');
+        const msg = `↩️ ${name} undid ₹${amt} — ${undone.category}${undone.merchant ? ' · ' + undone.merchant : ''}`;
+        for (const other of others) {
+          sendWhatsAppTo(other.phone, msg).catch(err =>
+            console.error('[household] undo notify failed:', err.message)
+          );
+        }
+      });
+    }).catch(() => {});
+
     return await composeResponse('undo', {
       amount: undone.amount, category: undone.category, merchant: undone.merchant
     }, user);
@@ -892,7 +911,26 @@ async function handleExpenseResult(result, raw, from, user) {
 
     } else if (conv.type === 'action') {
       if (conv.action === 'edit_last') {
-        await editLastExpense(conv.field, conv.value, from);
+        const edited = await editLastExpense(conv.field, conv.value, from);
+
+        // Notify household if shared category was edited
+        getUser(from).then(u => {
+          if (!u || !u.householdId) return;
+          const shared = u.sharedCategories || [];
+          if (!shared.includes(edited.category)) return;
+          getHouseholdMembers(from).then(members => {
+            const others = members.filter(m => m.phone !== from);
+            const name = u.name || 'Someone';
+            const amt = Number(edited.amount).toLocaleString('en-IN');
+            const msg = `✏️ ${name} edited ₹${amt} ${edited.category}${edited.merchant ? ' · ' + edited.merchant : ''} — ${conv.field} → ${conv.value}`;
+            for (const other of others) {
+              sendWhatsAppTo(other.phone, msg).catch(err =>
+                console.error('[household] edit notify failed:', err.message)
+              );
+            }
+          });
+        }).catch(() => {});
+
         return conv.text || 'Done! Last expense updated.';
 
       } else if (conv.action === 'bulk_recategorize') {
@@ -904,7 +942,28 @@ async function handleExpenseResult(result, raw, from, user) {
 
       } else if (conv.action === 'delete_row') {
         const expId = conv.expenseId || conv.rowIndex;
-        await deleteExpenseById(expId);
+        const deleted = await deleteExpenseById(expId);
+
+        // Notify household if shared category was deleted
+        if (deleted) {
+          getUser(from).then(u => {
+            if (!u || !u.householdId) return;
+            const shared = u.sharedCategories || [];
+            if (!shared.includes(deleted.category)) return;
+            getHouseholdMembers(from).then(members => {
+              const others = members.filter(m => m.phone !== from);
+              const name = u.name || 'Someone';
+              const amt = Number(deleted.amount).toLocaleString('en-IN');
+              const msg = `🗑️ ${name} deleted ₹${amt} — ${deleted.category}${deleted.merchant ? ' · ' + deleted.merchant : ''}`;
+              for (const other of others) {
+                sendWhatsAppTo(other.phone, msg).catch(err =>
+                  console.error('[household] delete notify failed:', err.message)
+                );
+              }
+            });
+          }).catch(() => {});
+        }
+
         return conv.text || 'Entry deleted.';
 
       } else if (conv.action === 'add_category') {

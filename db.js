@@ -339,27 +339,37 @@ async function editLastExpense(field, value, phone) {
   const col = fieldMap[field];
   if (!col) throw new Error('Unknown field: ' + field);
 
-  // Find last expense for this phone
+  // Find last expense for this phone (include details for household notifications)
   let query = supabase.from('expenses')
-    .select('id')
+    .select('id, amount, category, merchant')
     .order('created_at', { ascending: false })
     .limit(1);
   if (phone) query = query.eq('phone', phone);
   const { data, error } = await query;
   if (error || !data || data.length === 0) throw new Error('No expenses to edit');
 
+  const before = data[0];
   const { error: updateError } = await supabase.from('expenses')
     .update({ [col]: value })
-    .eq('id', data[0].id);
+    .eq('id', before.id);
   if (updateError) throw new Error('editLastExpense failed: ' + updateError.message);
 
-  return { field, value };
+  return { field, value, amount: before.amount, category: before.category, merchant: before.merchant };
 }
 
 // ─── Delete by ID (replaces deleteRowByIndex) ───────────────────────────────
 async function deleteExpenseById(id) {
+  // Fetch details before deleting (for household notifications)
+  const { data } = await supabase.from('expenses')
+    .select('amount, category, merchant')
+    .eq('id', id)
+    .limit(1);
+  const details = data && data[0] ? data[0] : null;
+
   const { error } = await supabase.from('expenses').delete().eq('id', id);
   if (error) throw new Error('deleteExpenseById failed: ' + error.message);
+
+  return details;
 }
 
 // ─── Bulk recategorize ──────────────────────────────────────────────────────
