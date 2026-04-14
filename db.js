@@ -110,7 +110,8 @@ async function getHouseholdExpensesWithIds(phone, limit = 200) {
   if (!user || !user.householdId) return getRecentExpensesWithIds(phone, limit);
 
   const members = await getHouseholdMembers(phone);
-  const sharedCategories = user.sharedCategories || [];
+  // Use union of all members' shared categories — robust to drift
+  const sharedCategories = await getHouseholdSharedCategories(phone);
   const otherPhones = members.map(m => m.phone).filter(p => p !== phone);
 
   // Own expenses
@@ -691,7 +692,8 @@ async function getHouseholdRows(phone) {
   if (!user || !user.householdId) return getAllRows(phone);
 
   const members = await getHouseholdMembers(phone);
-  const sharedCategories = user.sharedCategories || [];
+  // Use union of all members' shared categories — robust to drift
+  const sharedCategories = await getHouseholdSharedCategories(phone);
   const otherPhones = members.map(m => m.phone).filter(p => p !== phone);
 
   // Fetch user's own expenses
@@ -758,6 +760,32 @@ async function updateSharedCategories(phone, categories) {
     await updateUser(member.phone, { sharedCategories: categories });
   }
   return { updated: true, categories };
+}
+
+// Returns the union of every household member's shared categories.
+// Robust to drift — if any member considers a category shared, it counts.
+// Self-heals by re-syncing the union back to all members when drift is detected.
+async function getHouseholdSharedCategories(phone) {
+  const user = await getUser(phone);
+  if (!user || !user.householdId) return user?.sharedCategories || [];
+  const members = await getHouseholdMembers(phone);
+  const union = new Set();
+  for (const m of members) {
+    for (const c of (m.sharedCategories || [])) union.add(c);
+  }
+  const unionList = [...union];
+
+  // Detect drift: any member missing categories that others have
+  const drift = members.some(m => {
+    const mset = new Set(m.sharedCategories || []);
+    return unionList.some(c => !mset.has(c));
+  });
+  if (drift) {
+    for (const m of members) {
+      await updateUser(m.phone, { sharedCategories: unionList });
+    }
+  }
+  return unionList;
 }
 
 // ─── Export (NEW — replaces "view my sheet") ────────────────────────────────
@@ -876,6 +904,7 @@ module.exports = {
   // Household
   generateHouseholdId, getHouseholdPhones, getHouseholdMembers, getHouseholdRows,
   createHousehold, joinHousehold, leaveHousehold, updateSharedCategories,
+  getHouseholdSharedCategories,
   // Export
   getExpensesForExport,
   // Spending insights (materialized views)

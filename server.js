@@ -13,6 +13,7 @@ const {
   updateLastMessageAt,
   parseSalaryInput, parseStatementInput, getBillingCycleAdvice,
   getHouseholdRows, getHouseholdMembers, createHousehold, joinHousehold, leaveHousehold, updateSharedCategories,
+  getHouseholdSharedCategories,
   getRecentExpensesWithIds, getHouseholdExpensesWithIds, getExpensesForExport,
   getSpendingContext
 } = require('./db');
@@ -718,21 +719,21 @@ async function handleExpenseResult(result, raw, from, user) {
     await appendExpense(pending);
 
     // Cross-notify household members for shared expenses (fire-and-forget)
-    getUser(from).then(u => {
+    (async () => {
+      const u = await getUser(from);
       if (!u || !u.householdId) return;
-      const shared = u.sharedCategories || [];
+      const shared = await getHouseholdSharedCategories(from);
       if (!shared.includes(category)) return;
-      getHouseholdMembers(from).then(members => {
-        const others = members.filter(m => m.phone !== from);
-        const name = u.name || 'Someone';
-        const msg = name + ' logged ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '');
-        for (const other of others) {
-          sendWhatsAppTo(other.phone, msg).catch(err =>
-            console.error('[household] notify failed:', err.message)
-          );
-        }
-      });
-    }).catch(() => {});
+      const members = await getHouseholdMembers(from);
+      const others = members.filter(m => m.phone !== from);
+      const name = u.name || 'Someone';
+      const msg = name + ' logged ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '');
+      for (const other of others) {
+        sendWhatsAppTo(other.phone, msg).catch(err =>
+          console.error('[household] notify failed:', err.message)
+        );
+      }
+    })().catch(() => {});
 
     // Increment expense count (non-critical)
     try { await incrementExpenseCount(from); } catch (e) { /* non-critical */ }
@@ -824,22 +825,22 @@ async function handleExpenseResult(result, raw, from, user) {
     const undone = await undoLast(from);
 
     // Cross-notify household members when a shared expense is undone
-    getUser(from).then(u => {
+    (async () => {
+      const u = await getUser(from);
       if (!u || !u.householdId) return;
-      const shared = u.sharedCategories || [];
+      const shared = await getHouseholdSharedCategories(from);
       if (!shared.includes(undone.category)) return;
-      getHouseholdMembers(from).then(members => {
-        const others = members.filter(m => m.phone !== from);
-        const name = u.name || 'Someone';
-        const amt = Number(undone.amount).toLocaleString('en-IN');
-        const msg = `↩️ ${name} undid ₹${amt} — ${undone.category}${undone.merchant ? ' · ' + undone.merchant : ''}`;
-        for (const other of others) {
-          sendWhatsAppTo(other.phone, msg).catch(err =>
-            console.error('[household] undo notify failed:', err.message)
-          );
-        }
-      });
-    }).catch(() => {});
+      const members = await getHouseholdMembers(from);
+      const others = members.filter(m => m.phone !== from);
+      const name = u.name || 'Someone';
+      const amt = Number(undone.amount).toLocaleString('en-IN');
+      const msg = `↩️ ${name} undid ₹${amt} — ${undone.category}${undone.merchant ? ' · ' + undone.merchant : ''}`;
+      for (const other of others) {
+        sendWhatsAppTo(other.phone, msg).catch(err =>
+          console.error('[household] undo notify failed:', err.message)
+        );
+      }
+    })().catch(() => {});
 
     return await composeResponse('undo', {
       amount: undone.amount, category: undone.category, merchant: undone.merchant
@@ -918,22 +919,22 @@ async function handleExpenseResult(result, raw, from, user) {
         const edited = await editLastExpense(conv.field, conv.value, from);
 
         // Notify household if shared category was edited
-        getUser(from).then(u => {
+        (async () => {
+          const u = await getUser(from);
           if (!u || !u.householdId) return;
-          const shared = u.sharedCategories || [];
+          const shared = await getHouseholdSharedCategories(from);
           if (!shared.includes(edited.category)) return;
-          getHouseholdMembers(from).then(members => {
-            const others = members.filter(m => m.phone !== from);
-            const name = u.name || 'Someone';
-            const amt = Number(edited.amount).toLocaleString('en-IN');
-            const msg = `✏️ ${name} edited ₹${amt} ${edited.category}${edited.merchant ? ' · ' + edited.merchant : ''} — ${conv.field} → ${conv.value}`;
-            for (const other of others) {
-              sendWhatsAppTo(other.phone, msg).catch(err =>
-                console.error('[household] edit notify failed:', err.message)
-              );
-            }
-          });
-        }).catch(() => {});
+          const members = await getHouseholdMembers(from);
+          const others = members.filter(m => m.phone !== from);
+          const name = u.name || 'Someone';
+          const amt = Number(edited.amount).toLocaleString('en-IN');
+          const msg = `✏️ ${name} edited ₹${amt} ${edited.category}${edited.merchant ? ' · ' + edited.merchant : ''} — ${conv.field} → ${conv.value}`;
+          for (const other of others) {
+            sendWhatsAppTo(other.phone, msg).catch(err =>
+              console.error('[household] edit notify failed:', err.message)
+            );
+          }
+        })().catch(() => {});
 
         return conv.text || 'Done! Last expense updated.';
 
@@ -950,22 +951,22 @@ async function handleExpenseResult(result, raw, from, user) {
 
         // Notify household if shared category was deleted
         if (deleted) {
-          getUser(from).then(u => {
+          (async () => {
+            const u = await getUser(from);
             if (!u || !u.householdId) return;
-            const shared = u.sharedCategories || [];
+            const shared = await getHouseholdSharedCategories(from);
             if (!shared.includes(deleted.category)) return;
-            getHouseholdMembers(from).then(members => {
-              const others = members.filter(m => m.phone !== from);
-              const name = u.name || 'Someone';
-              const amt = Number(deleted.amount).toLocaleString('en-IN');
-              const msg = `🗑️ ${name} deleted ₹${amt} — ${deleted.category}${deleted.merchant ? ' · ' + deleted.merchant : ''}`;
-              for (const other of others) {
-                sendWhatsAppTo(other.phone, msg).catch(err =>
-                  console.error('[household] delete notify failed:', err.message)
-                );
-              }
-            });
-          }).catch(() => {});
+            const members = await getHouseholdMembers(from);
+            const others = members.filter(m => m.phone !== from);
+            const name = u.name || 'Someone';
+            const amt = Number(deleted.amount).toLocaleString('en-IN');
+            const msg = `🗑️ ${name} deleted ₹${amt} — ${deleted.category}${deleted.merchant ? ' · ' + deleted.merchant : ''}`;
+            for (const other of others) {
+              sendWhatsAppTo(other.phone, msg).catch(err =>
+                console.error('[household] delete notify failed:', err.message)
+              );
+            }
+          })().catch(() => {});
         }
 
         return conv.text || 'Entry deleted.';
