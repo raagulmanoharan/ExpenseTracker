@@ -108,7 +108,7 @@ async function buildWeeklyDigest(phone) {
 // Inspired by OpenClaw's heartbeat pattern
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Persistent state: { "nudgeId:phone" => Date }
+// Persistent state: { "nudgeId:phone" => Date, "_pace:phone" => number }
 // Survives server restarts via JSON file on disk
 const STATE_FILE = path.join(__dirname, '.heartbeat-state.json');
 const heartbeatState = new Map();
@@ -117,8 +117,9 @@ function loadState() {
   try {
     if (!fs.existsSync(STATE_FILE)) return;
     const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    for (const [key, iso] of Object.entries(raw)) {
-      heartbeatState.set(key, new Date(iso));
+    for (const [key, val] of Object.entries(raw)) {
+      // Numbers stay as numbers (pace ratios), strings parsed as Dates
+      heartbeatState.set(key, typeof val === 'number' ? val : new Date(val));
     }
     console.log('[heartbeat] Loaded ' + heartbeatState.size + ' state entries from disk');
   } catch (err) {
@@ -129,8 +130,8 @@ function loadState() {
 function saveState() {
   try {
     const obj = {};
-    for (const [key, date] of heartbeatState) {
-      obj[key] = date.toISOString();
+    for (const [key, val] of heartbeatState) {
+      obj[key] = val instanceof Date ? val.toISOString() : val;
     }
     fs.writeFileSync(STATE_FILE, JSON.stringify(obj), 'utf8');
   } catch (err) {
@@ -181,6 +182,7 @@ function getISTDayOfWeek() {
 }
 
 // ─── Smart nudge: projection-based spending insight ──────────────────────────
+// Returns { message, paceRatio } or null. paceRatio is null for no-comparison messages.
 async function buildSmartNudgeForUser(phone) {
   var pace = getCyclePaceAnalysis(phone);
   if (pace.then) pace = await pace;
@@ -210,20 +212,22 @@ async function buildSmartNudgeForUser(phone) {
       }
 
       msg += '\n\nPayday ' + (daysUntilPayday === 1 ? 'tomorrow' : 'in ' + daysUntilPayday + ' days') + '.';
-      return msg;
+      return { message: msg, paceRatio };
 
     } else if (paceRatio < 0.9 && daysUntilPayday <= 5) {
       var saved = Math.round(comp.baselineMonthly * (pace.cycleProgress / 100) - pace.discretionaryTotal);
-      return 'Nice work this cycle.\n\n' +
+      return { message: 'Nice work this cycle.\n\n' +
         'Rs.' + proj.dailyRate.toLocaleString('en-IN') + '/day vs Rs.' + comp.baselineDaily.toLocaleString('en-IN') + ' last cycle. ' +
         'You\'re roughly Rs.' + saved.toLocaleString('en-IN') + ' under your usual pace.\n\n' +
-        'Payday ' + (daysUntilPayday === 1 ? 'tomorrow' : 'in ' + daysUntilPayday + ' days') + '. Good time to sweep the surplus into investments.';
+        'Payday ' + (daysUntilPayday === 1 ? 'tomorrow' : 'in ' + daysUntilPayday + ' days') + '. Good time to sweep the surplus into investments.',
+        paceRatio };
 
     } else if (paceRatio > 1.15 && daysUntilPayday > 5) {
-      return 'Small heads up.\n\n' +
+      return { message: 'Small heads up.\n\n' +
         'Running at Rs.' + proj.dailyRate.toLocaleString('en-IN') + '/day vs Rs.' + comp.baselineDaily.toLocaleString('en-IN') + ' last cycle. ' +
         'Projected *Rs.' + proj.projectedTotal.toLocaleString('en-IN') + '* by payday (last cycle: Rs.' + comp.baselineMonthly.toLocaleString('en-IN') + ').\n\n' +
-        'Nothing alarming — ' + daysUntilPayday + ' days to go.';
+        'Nothing alarming — ' + daysUntilPayday + ' days to go.',
+        paceRatio };
     }
   }
 
@@ -234,10 +238,11 @@ async function buildSmartNudgeForUser(phone) {
           return '  ' + getCategoryEmoji(c.cat) + ' ' + c.cat + ': Rs.' + c.amt.toLocaleString('en-IN') + ' (Rs.' + c.daily.toLocaleString('en-IN') + '/day)';
         }).join('\n')
       : '';
-    return 'Midweek check-in.\n\n' +
+    return { message: 'Midweek check-in.\n\n' +
       'You\'re at Rs.' + pace.discretionaryTotal.toLocaleString('en-IN') + ' discretionary so far (' + pace.cycleProgress + '% through ' + pace.cycleLabel + ').\n' +
       'At Rs.' + proj.dailyRate.toLocaleString('en-IN') + '/day, you\'ll land around *Rs.' + proj.projectedTotal.toLocaleString('en-IN') + '* by payday.' +
-      topLine;
+      topLine,
+      paceRatio: null };
   }
 
   return null;
@@ -258,7 +263,7 @@ function getTopDiscretionaryCategory(byCategory) {
 const NUDGE_CHECKS = [
   {
     id: 'smart_nudge',
-    description: 'Projection-based spending insight',
+    description: 'Projection-based spending insight (fires on meaningful pace change)',
     cadenceHours: 24,
     windowStart: 9,   // 9 AM IST
     windowEnd: 10,
@@ -269,7 +274,30 @@ const NUDGE_CHECKS = [
     },
     check: async function(user) {
       if (!user.phone) return null;
-      return await buildSmartNudgeForUser(user.phone);
+      var result = await buildSmartNudgeForUser(user.phone);
+      if (!result) return null;
+
+      var paceKey = '_pace:' + user.phone;
+      var lastPace = heartbeatState.get(paceKey);
+      var lastSent = getLastSent('smart_nudge', user.phone);
+      var hoursSinceLast = lastSent ? (Date.now() - lastSent.getTime()) / (1000 * 60 * 60) : Infinity;
+
+      // Gate: fire if any of these are true
+      var firstTime = (lastPace === undefined || lastPace === null);
+      var paceChanged = result.paceRatio !== null && typeof lastPace === 'number'
+        && Math.abs(result.paceRatio - lastPace) >= 0.15;
+      var staleFloor = hoursSinceLast >= 72;  // 3-day floor so it doesn't go silent
+      var noPaceData = result.paceRatio === null; // Wednesday midweek (no comparison)
+
+      if (!firstTime && !paceChanged && !staleFloor && !noPaceData) return null;
+
+      // Store current pace ratio for next comparison
+      if (result.paceRatio !== null) {
+        heartbeatState.set(paceKey, result.paceRatio);
+        saveState();
+      }
+
+      return result.message;
     }
   },
   {
