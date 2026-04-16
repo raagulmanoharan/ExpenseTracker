@@ -381,7 +381,7 @@ const NUDGE_CHECKS = [
         "Quick check-in. How's the wallet today? Log something?",
         "Expense reminder — send me a receipt, bank SMS, or just type it out.",
         "Any receipts piling up? Send them over!",
-        "End of day check — any expenses from today to track?"
+        "Spent anything today? Takes 10 seconds to log it.",
       ];
       return nudges[Math.floor(Math.random() * nudges.length)];
     }
