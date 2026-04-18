@@ -413,6 +413,16 @@ async function deleteExpenseById(id) {
   return details;
 }
 
+// Fetch expense details without deleting — used by the delete-confirmation flow
+async function getExpenseById(id) {
+  const { data, error } = await supabase.from('expenses')
+    .select('id, date, time, amount, category, merchant, note')
+    .eq('id', id)
+    .limit(1);
+  if (error) throw new Error('getExpenseById failed: ' + error.message);
+  return data && data[0] ? data[0] : null;
+}
+
 // ─── Bulk recategorize ──────────────────────────────────────────────────────
 async function bulkRecategorize(updates) {
   // updates = [{id: UUID, category: string}] (new format)
@@ -897,7 +907,7 @@ module.exports = {
   checkAnomaly, undoLast,
   getCyclePaceAnalysis, getLastEntryInfo,
   // Edit/delete
-  editLastExpense, deleteExpenseById, bulkRecategorize,
+  editLastExpense, deleteExpenseById, getExpenseById, bulkRecategorize,
   // Users
   getUser, createUser, updateUser, incrementExpenseCount,
   updateLastMessageAt, getAllUsers,

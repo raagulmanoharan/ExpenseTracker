@@ -8,7 +8,7 @@ const {
   initSheet, appendExpense, batchAppendExpenses, getAllRows,
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
   getBudgets, suggestBudgets, getBudgetStatus,
-  checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteExpenseById, bulkRecategorize,
+  checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteExpenseById, getExpenseById, bulkRecategorize,
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount,
   updateLastMessageAt,
   parseSalaryInput, parseStatementInput, getBillingCycleAdvice,
@@ -37,6 +37,8 @@ const pendingHouseholdSetup = new Map(); // awaiting shared category selection
 const pendingSharedCategoryReset = new Map(); // awaiting full shared category reset
 const pendingSetup = new Map();    // progressive CC/salary setup: { stage, askedAt }
 const setupHintsSent = new Map();  // phone → Set('cc', 'salary') — tracks what's been asked
+const pendingDelete = new Map();   // phone → { expenseId, details, askedAt } — awaiting yes/no confirmation
+const PENDING_DELETE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 const startedAt = new Date();
@@ -130,6 +132,55 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
         twiml.message(greeting);
         return sendResponse();
       }
+    }
+
+    // ── 0a. Pending delete confirmation — destructive action gate ─────────
+    if (pendingDelete.has(from)) {
+      const pending = pendingDelete.get(from);
+      // Auto-expire stale confirmations
+      if (Date.now() - pending.askedAt > PENDING_DELETE_TTL_MS) {
+        pendingDelete.delete(from);
+      } else if (/^(yes|y|confirm|delete|do it|go ahead|ok|okay)$/i.test(lower)) {
+        // User confirmed — execute the delete
+        pendingDelete.delete(from);
+        try {
+          const deleted = await deleteExpenseById(pending.expenseId);
+
+          // Notify household if shared category was deleted
+          if (deleted) {
+            (async () => {
+              const u = await getUser(from);
+              if (!u || !u.householdId) return;
+              const shared = await getHouseholdSharedCategories(from);
+              if (!shared.includes(deleted.category)) return;
+              const members = await getHouseholdMembers(from);
+              const others = members.filter(m => m.phone !== from);
+              const name = u.name || 'Someone';
+              const amt = Number(deleted.amount).toLocaleString('en-IN');
+              const msg = `🗑️ ${name} deleted ₹${amt} — ${deleted.category}${deleted.merchant ? ' · ' + deleted.merchant : ''}`;
+              for (const other of others) {
+                sendWhatsAppTo(other.phone, msg).catch(err =>
+                  console.error('[household] delete notify failed:', err.message)
+                );
+              }
+            })().catch(() => {});
+          }
+
+          const d = pending.details;
+          const amt = Number(d.amount).toLocaleString('en-IN');
+          twiml.message(`✅ Deleted: ₹${amt} — ${d.category}${d.merchant ? ' · ' + d.merchant : ''} on ${d.date}`);
+        } catch (err) {
+          twiml.message('Could not delete that entry: ' + err.message);
+        }
+        return sendResponse();
+      } else if (/^(no|nope|cancel|stop|wait|nevermind|never mind)$/i.test(lower)) {
+        pendingDelete.delete(from);
+        twiml.message('Cancelled — nothing was deleted.');
+        return sendResponse();
+      }
+      // Any other message: silently clear the pending delete and let normal flow continue.
+      // (Don't trap the user in confirmation mode.)
+      pendingDelete.delete(from);
     }
 
     // ── 0b. Household setup — shared category selection + invite ──────────
@@ -947,29 +998,16 @@ async function handleExpenseResult(result, raw, from, user) {
 
       } else if (conv.action === 'delete_row') {
         const expId = conv.expenseId || conv.rowIndex;
-        const deleted = await deleteExpenseById(expId);
-
-        // Notify household if shared category was deleted
-        if (deleted) {
-          (async () => {
-            const u = await getUser(from);
-            if (!u || !u.householdId) return;
-            const shared = await getHouseholdSharedCategories(from);
-            if (!shared.includes(deleted.category)) return;
-            const members = await getHouseholdMembers(from);
-            const others = members.filter(m => m.phone !== from);
-            const name = u.name || 'Someone';
-            const amt = Number(deleted.amount).toLocaleString('en-IN');
-            const msg = `🗑️ ${name} deleted ₹${amt} — ${deleted.category}${deleted.merchant ? ' · ' + deleted.merchant : ''}`;
-            for (const other of others) {
-              sendWhatsAppTo(other.phone, msg).catch(err =>
-                console.error('[household] delete notify failed:', err.message)
-              );
-            }
-          })().catch(() => {});
+        // Two-step delete: fetch details, ask for confirmation, only delete on "yes"
+        const details = await getExpenseById(expId);
+        if (!details) {
+          return "Couldn't find that entry — it may have already been deleted.";
         }
-
-        return conv.text || 'Entry deleted.';
+        pendingDelete.set(from, { expenseId: expId, details, askedAt: Date.now() });
+        const amt = Number(details.amount).toLocaleString('en-IN');
+        const merchantPart = details.merchant ? ' · ' + details.merchant : '';
+        const notePart = details.note ? `\n   _${details.note}_` : '';
+        return `⚠️ About to delete:\n   ₹${amt} — ${details.category}${merchantPart} on ${details.date}${notePart}\n\nReply *yes* to confirm or *no* to cancel.`;
 
       } else if (conv.action === 'add_category') {
         return conv.text || 'Got it! Use that category name when logging and I will recognise it.';
