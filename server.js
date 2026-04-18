@@ -188,9 +188,11 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     // ── 0a-bis. Pending duplicate-expense confirmation ───────────────────
     if (pendingDuplicateConfirm.has(from)) {
       const pending = pendingDuplicateConfirm.get(from);
+      const isYesButton = buttonPayload === 'dup_yes';
+      const isNoButton = buttonPayload === 'dup_no';
       if (Date.now() - pending.askedAt > PENDING_DUP_TTL_MS) {
         pendingDuplicateConfirm.delete(from);
-      } else if (/^(yes|y|confirm|add|add anyway|log it|do it|go ahead|ok|okay|not duplicate|not a duplicate)$/i.test(lower)) {
+      } else if (isYesButton || /^(yes|y|confirm|add|add anyway|log it|do it|go ahead|ok|okay|not duplicate|not a duplicate)$/i.test(lower)) {
         pendingDuplicateConfirm.delete(from);
         try {
           await appendExpense(pending.newExpense);
@@ -201,7 +203,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
           twiml.message('Could not log that — ' + err.message);
         }
         return sendResponse();
-      } else if (/^(no|nope|cancel|skip|don't|same|duplicate|its same|same one|dont add)$/i.test(lower)) {
+      } else if (isNoButton || /^(no|nope|cancel|skip|don't|same|duplicate|its same|same one|dont add)$/i.test(lower)) {
         pendingDuplicateConfirm.delete(from);
         twiml.message('👍 Skipped — kept the original entry.');
         return sendResponse();
@@ -679,7 +681,11 @@ async function handleExpenseResult(result, raw, from, user) {
         const existingAmt = Number(dup.amount).toLocaleString('en-IN');
         const minutesAgo = Math.max(1, Math.round((Date.now() - new Date(dup.created_at).getTime()) / 60000));
         const merchantPart = dup.merchant ? ' · ' + dup.merchant : '';
-        return `⚠️ Looks like a duplicate.\n\nJust logged ${minutesAgo} min ago:\n   ₹${existingAmt} — ${dup.category}${merchantPart}\n\nLog this one too? Reply *yes* to add anyway, *no* to skip.`;
+        const detailLine = `₹${existingAmt} — ${dup.category}${merchantPart} (${minutesAgo} min ago)`;
+        const fallback = `⚠️ Looks like a duplicate.\n\nJust logged: ${detailLine}\n\nLog this one too? Reply *yes* to add anyway, *no* to skip.`;
+        // Send interactive yes/no buttons; falls back to text if template fails
+        sendWhatsAppInteractive(from, 'duplicate_confirm', { '1': detailLine }, fallback).catch(() => {});
+        return null; // sendWhatsAppInteractive sends async; return null so webhook stays empty
       }
     } catch (err) {
       console.warn('[dedup] check failed:', err.message);

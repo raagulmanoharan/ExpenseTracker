@@ -12,6 +12,7 @@ const INTERACTIVE_SIDS = {
   household_invite_msg:   'HX580e006baf80c7ad1f2b772ecdda81b9',
   category_picker:        'HX1a5738924be3cfbf63af2dbf58a7a37e',
   salary_setup_ask:       'HXc3182799f55f58f4aac4a439102f0b58',
+  duplicate_confirm:      'HXc5643f5b5e641cf1048144c6c0bfd97a',
 };
 
 let _client = null;
