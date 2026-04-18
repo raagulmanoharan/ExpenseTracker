@@ -241,16 +241,19 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
           '\n\nWant to invite someone? Send their phone number (e.g. 8220615883), or *done* to skip.';
         // Send interactive buttons, respond with empty TwiML
         sendWhatsAppInteractive(from, 'household_invite_step', { '1': catList }, fallbackMsg).catch(() => {});
-      } else if (incomingMsg.toLowerCase() === 'cancel') {
+        return sendResponse();
+      }
+      if (/^cancel$/i.test(lower)) {
         pendingHouseholdSetup.delete(from);
         twiml.message('Household setup cancelled.');
-      } else {
-        twiml.message('Reply with numbers like *1,3,5,8,9* to pick shared categories. Or "cancel" to abort.');
+        return sendResponse();
       }
-      return sendResponse();
+      // Not numbers, not cancel — drop the state and let the message route normally.
+      // (No more trapping the user with "Reply with numbers like 1,3,5".)
+      pendingHouseholdSetup.delete(from);
     }
 
-    // ── 0d. Shared category reset — full re-pick ─────────────────────────
+    // ── 0d. Shared category reset — full re-pick (non-blocking) ──────────
     if (pendingSharedCategoryReset.has(from)) {
       const picks = incomingMsg.split(/[,\s]+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= CATEGORIES.length);
       if (picks.length > 0) {
@@ -258,166 +261,49 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
         await updateSharedCategories(from, sharedCategories);
         pendingSharedCategoryReset.delete(from);
         twiml.message('✅ Shared categories updated: ' + sharedCategories.join(', '));
-      } else if (incomingMsg.toLowerCase() === 'cancel') {
+        return sendResponse();
+      }
+      if (/^cancel$/i.test(lower)) {
         pendingSharedCategoryReset.delete(from);
         twiml.message('Cancelled.');
-      } else {
-        twiml.message('Reply with numbers like *1,3,5,8,9*. Or "cancel".');
-      }
-      return sendResponse();
-    }
-
-    // ── 0e. Household commands ───────────────────────────────────────────
-    if (/\b(create|add|start|setup|set\s*up)\s+(a\s+)?(household|family)\b/i.test(lower)) {
-      const existing = await getUser(from);
-      if (existing && existing.householdId) {
-        const members = await getHouseholdMembers(from);
-        const names = members.map(m => m.name || 'Unknown').join(', ');
-        twiml.message('You\'re already in a household (*' + existing.householdId + '*) with: ' + names + '\n\nSend "leave household" first if you want to create a new one.');
         return sendResponse();
       }
-      const result = await createHousehold(from, []);
-      pendingHouseholdSetup.set(from, { householdId: result.householdId });
-      const catList = CATEGORIES.map((c, i) => (i + 1) + '. ' + c).join('\n');
-      twiml.message(
-        '🏠 Setting up your household...\n\n' +
-        'Which categories should be *shared* with your family? Reply with numbers:\n\n' +
-        catList + '\n\n' +
-        'e.g. *1,2,3,8,9,15*'
-      );
-      return sendResponse();
+      // Not numbers, not cancel — drop state and route normally
+      pendingSharedCategoryReset.delete(from);
     }
 
-    // Handle join button payload (join_hh_xxxx) or text "join hh_xxxx"
+    // ── 0e. Household interactive button payloads only — text routes via parser ──
+    // (Join/Decline buttons send buttonPayload; text "join hh_xxx" goes through parser)
     const joinPayload = buttonPayload.startsWith('join_') ? buttonPayload.replace('join_', '') : null;
     if (joinPayload === 'hh_decline' || buttonPayload === 'hh_decline') {
-      twiml.message('No worries! You can always join later by sending "join <code>".');
+      twiml.message('No worries! You can always join later by saying "join <code>".');
       return sendResponse();
     }
-    if (joinPayload || lower.startsWith('join ')) {
-      const code = joinPayload || lower.replace('join ', '').trim();
-      if (!code.startsWith('hh_')) {
-        // Not a household code — fall through to normal parsing
-      } else {
-        const existing = await getUser(from);
-        if (existing && existing.householdId) {
-          twiml.message('You\'re already in a household (*' + existing.householdId + '*). Send "leave household" first.');
-          return sendResponse();
-        }
-        const result = await joinHousehold(from, code);
-        if (result.error === 'not_found') {
-          twiml.message('❌ Household code "' + code + '" not found. Check with your family for the right code.');
-          return sendResponse();
-        }
-        const sharedList = (result.sharedCategories || []).join(', ') || 'none set';
-        twiml.message(
-          '✅ *Joined household!*\n\n' +
-          '👨‍👩‍👧 Members: ' + result.members.join(', ') + ' & you\n' +
-          '📂 Shared categories: ' + sharedList + '\n\n' +
-          'Your summaries now include shared household expenses.'
-        );
-        // Notify existing members
-        const members = await getHouseholdMembers(from);
-        const joiner = await getUser(from);
-        const joinerName = (joiner && joiner.name) || 'Someone';
-        for (const member of members) {
-          if (member.phone === from) continue;
-          sendWhatsAppTo(member.phone, '👋 *' + joinerName + '* joined your household!').catch(() => {});
-        }
-        return sendResponse();
-      }
-    }
-
-    if (lower === 'leave household' || lower === 'leave family') {
+    if (joinPayload && joinPayload.startsWith('hh_')) {
       const existing = await getUser(from);
-      if (!existing || !existing.householdId) {
-        twiml.message('You\'re not in a household.');
+      if (existing && existing.householdId) {
+        twiml.message('You\'re already in a household (*' + existing.householdId + '*). Say "leave household" first.');
         return sendResponse();
       }
+      const result = await joinHousehold(from, joinPayload);
+      if (result.error === 'not_found') {
+        twiml.message('❌ Household code "' + joinPayload + '" not found. Check with your family for the right code.');
+        return sendResponse();
+      }
+      const sharedList = (result.sharedCategories || []).join(', ') || 'none set';
+      twiml.message(
+        '✅ *Joined household!*\n\n' +
+        '👨‍👩‍👧 Members: ' + result.members.join(', ') + ' & you\n' +
+        '📂 Shared categories: ' + sharedList + '\n\n' +
+        'Your summaries now include shared household expenses.'
+      );
       const members = await getHouseholdMembers(from);
-      const leaverName = (existing.name) || 'Someone';
-      await leaveHousehold(from);
-      twiml.message('👋 You\'ve left the household. Your summaries now show only your expenses.');
-      // Notify remaining members
+      const joiner = await getUser(from);
+      const joinerName = (joiner && joiner.name) || 'Someone';
       for (const member of members) {
         if (member.phone === from) continue;
-        sendWhatsAppTo(member.phone, '👋 *' + leaverName + '* left the household.').catch(() => {});
+        sendWhatsAppTo(member.phone, '👋 *' + joinerName + '* joined your household!').catch(() => {});
       }
-      return sendResponse();
-    }
-
-    if (lower === 'my household' || lower === 'my family') {
-      const existing = await getUser(from);
-      if (!existing || !existing.householdId) {
-        twiml.message('You\'re not in a household yet.\n\nSend "create household" to start one, or "join <code>" to join an existing one.');
-        return sendResponse();
-      }
-      const members = await getHouseholdMembers(from);
-      const names = members.map(m => (m.name || 'Unknown') + (m.phone === from ? ' (you)' : '')).join('\n  ');
-      const sharedList = (existing.sharedCategories || []).join(', ') || 'none';
-      twiml.message(
-        '🏠 *Your Household*\n\n' +
-        '🔑 Code: *' + existing.householdId + '*\n' +
-        '👥 Members:\n  ' + names + '\n\n' +
-        '📂 Shared categories:\n  ' + sharedList + '\n\n' +
-        'Commands: "add shared: Category", "remove shared: Category", "set shared categories", "leave household"'
-      );
-      return sendResponse();
-    }
-
-    if (lower.startsWith('add shared:') || lower.startsWith('add shared ')) {
-      const input = incomingMsg.replace(/^add shared[:\s]+/i, '').trim();
-      const existing = await getUser(from);
-      if (!existing || !existing.householdId) {
-        twiml.message('You\'re not in a household. Send "create household" first.');
-        return sendResponse();
-      }
-      const match = CATEGORIES.find(c => c.toLowerCase().includes(input.toLowerCase()));
-      if (!match) {
-        twiml.message('Category not found. Available: ' + CATEGORIES.join(', '));
-        return sendResponse();
-      }
-      const current = existing.sharedCategories || [];
-      if (current.includes(match)) {
-        twiml.message(match + ' is already shared.');
-        return sendResponse();
-      }
-      await updateSharedCategories(from, [...current, match]);
-      twiml.message('✅ *' + match + '* is now a shared category.');
-      return sendResponse();
-    }
-
-    if (lower.startsWith('remove shared:') || lower.startsWith('remove shared ')) {
-      const input = incomingMsg.replace(/^remove shared[:\s]+/i, '').trim();
-      const existing = await getUser(from);
-      if (!existing || !existing.householdId) {
-        twiml.message('You\'re not in a household.');
-        return sendResponse();
-      }
-      const match = CATEGORIES.find(c => c.toLowerCase().includes(input.toLowerCase()));
-      if (!match) {
-        twiml.message('Category not found. Available: ' + CATEGORIES.join(', '));
-        return sendResponse();
-      }
-      const current = existing.sharedCategories || [];
-      if (!current.includes(match)) {
-        twiml.message(match + ' is already personal.');
-        return sendResponse();
-      }
-      await updateSharedCategories(from, current.filter(c => c !== match));
-      twiml.message('✅ *' + match + '* is now a personal category.');
-      return sendResponse();
-    }
-
-    if (lower === 'set shared categories' || lower === 'shared categories') {
-      const existing = await getUser(from);
-      if (!existing || !existing.householdId) {
-        twiml.message('You\'re not in a household. Send "create household" first.');
-        return sendResponse();
-      }
-      pendingSharedCategoryReset.set(from, true);
-      const catList = CATEGORIES.map((c, i) => (i + 1) + '. ' + c).join('\n');
-      twiml.message('Pick shared categories (reply with numbers):\n\n' + catList + '\n\ne.g. *1,2,3,8,9,15*');
       return sendResponse();
     }
 
@@ -545,16 +431,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       }
     }
 
-    // ── 0g. Export command ────────────────────────────────────────────────
-    if (lower === 'export' || lower === 'export my expenses' || lower === 'download') {
-      const crypto = require('crypto');
-      const token = crypto.randomUUID();
-      exportTokens.set(token, { phone: from, expires: Date.now() + 10 * 60 * 1000 }); // 10 min
-      const baseUrl = process.env.WEBHOOK_URL || `https://${req.get('host')}`;
-      const exportUrl = baseUrl + '/export/' + token;
-      twiml.message('📥 Here\'s your export link (valid for 10 minutes):\n\n' + exportUrl + '\n\nThis will download a CSV with all your expenses.');
-      return sendResponse();
-    }
+    // (Export now routes via parser intent — see handleExpenseResult.)
 
     // ── 1. PDF import confirmation ────────────────────────────────────────
     if (pendingImport.has(from)) {
@@ -905,7 +782,8 @@ async function handleExpenseResult(result, raw, from, user) {
                     parsed.type === 'last' ? 'end of month' : 'last working day';
       return await composeResponse('salary_set', { label }, user);
     }
-    return 'Could not parse that. Try "26", "last", or "last working day".';
+    // Couldn't extract a salary — don't trap with a canned message. Let Claude handle it.
+    return await runConversation(raw, from, user);
 
   } else if (result.type === 'set_statement') {
     const parsed = parseStatementInput(result.raw || raw);
@@ -920,7 +798,8 @@ async function handleExpenseResult(result, raw, from, user) {
       const summary = Object.entries(dates).map(function(e) { return e[0] + ': ' + e[1] + 'th'; }).join(', ');
       return await composeResponse('statement_set', { summary }, user);
     }
-    return await composeResponse('statement_need_card', { day: null }, user);
+    // Couldn't extract statement details — fall back to natural conversation
+    return await runConversation(raw, from, user);
 
   } else if (result.type === 'purchase_timing') {
     const userForPurchase = await getUser(from);
@@ -937,10 +816,151 @@ async function handleExpenseResult(result, raw, from, user) {
       advice: lines, bestCard: best.card, bestDays: best.interestFreeDays
     }, user);
 
+  // ─── Household intents ───────────────────────────────────────────────────
+  } else if (result.type === 'create_household') {
+    const existing = await getUser(from);
+    if (existing && existing.householdId) {
+      const members = await getHouseholdMembers(from);
+      const names = members.map(m => m.name || 'Unknown').join(', ');
+      return 'You\'re already in a household (*' + existing.householdId + '*) with: ' + names + '\n\nSay "leave household" first if you want to create a new one.';
+    }
+    const created = await createHousehold(from, []);
+    pendingHouseholdSetup.set(from, { householdId: created.householdId });
+    const catList = CATEGORIES.map((c, i) => (i + 1) + '. ' + c).join('\n');
+    return '🏠 Setting up your household...\n\n' +
+      'Which categories should be *shared* with your family? Reply with numbers:\n\n' +
+      catList + '\n\ne.g. *1,2,3,8,9,15*';
+
+  } else if (result.type === 'leave_household') {
+    const existing = await getUser(from);
+    if (!existing || !existing.householdId) {
+      return 'You\'re not in a household.';
+    }
+    const members = await getHouseholdMembers(from);
+    const leaverName = existing.name || 'Someone';
+    await leaveHousehold(from);
+    for (const member of members) {
+      if (member.phone === from) continue;
+      sendWhatsAppTo(member.phone, '👋 *' + leaverName + '* left the household.').catch(() => {});
+    }
+    return '👋 You\'ve left the household. Your summaries now show only your expenses.';
+
+  } else if (result.type === 'view_household') {
+    const existing = await getUser(from);
+    if (!existing || !existing.householdId) {
+      return 'You\'re not in a household yet. Say "create household" to start one, or "join <code>" to join an existing one.';
+    }
+    const members = await getHouseholdMembers(from);
+    const names = members.map(m => (m.name || 'Unknown') + (m.phone === from ? ' (you)' : '')).join('\n  ');
+    const sharedList = (existing.sharedCategories || []).join(', ') || 'none';
+    return '🏠 *Your Household*\n\n' +
+      '🔑 Code: *' + existing.householdId + '*\n' +
+      '👥 Members:\n  ' + names + '\n\n' +
+      '📂 Shared categories:\n  ' + sharedList + '\n\n' +
+      'You can say things like "make food shared", "stop sharing groceries", or "redo shared categories".';
+
+  } else if (result.type === 'add_shared_category') {
+    const existing = await getUser(from);
+    if (!existing || !existing.householdId) {
+      return 'You\'re not in a household. Say "create household" first.';
+    }
+    if (!result.category) {
+      return 'Which category should be shared? Try "make food shared" or "share groceries".';
+    }
+    const match = CATEGORIES.find(c => c.toLowerCase() === result.category.toLowerCase());
+    if (!match) {
+      return 'I don\'t recognise "' + result.category + '". Categories are: ' + CATEGORIES.join(', ');
+    }
+    const current = existing.sharedCategories || [];
+    if (current.includes(match)) {
+      return match + ' is already shared.';
+    }
+    await updateSharedCategories(from, [...current, match]);
+    return '✅ *' + match + '* is now a shared category.';
+
+  } else if (result.type === 'remove_shared_category') {
+    const existing = await getUser(from);
+    if (!existing || !existing.householdId) {
+      return 'You\'re not in a household.';
+    }
+    if (!result.category) {
+      return 'Which category should I make personal again? Try "make food personal" or "stop sharing groceries".';
+    }
+    const match = CATEGORIES.find(c => c.toLowerCase() === result.category.toLowerCase());
+    if (!match) {
+      return 'I don\'t recognise "' + result.category + '". Categories are: ' + CATEGORIES.join(', ');
+    }
+    const current = existing.sharedCategories || [];
+    if (!current.includes(match)) {
+      return match + ' is already personal.';
+    }
+    await updateSharedCategories(from, current.filter(c => c !== match));
+    return '✅ *' + match + '* is now a personal category.';
+
+  } else if (result.type === 'set_shared_categories') {
+    const existing = await getUser(from);
+    if (!existing || !existing.householdId) {
+      return 'You\'re not in a household. Say "create household" first.';
+    }
+    pendingSharedCategoryReset.set(from, true);
+    const catList = CATEGORIES.map((c, i) => (i + 1) + '. ' + c).join('\n');
+    return 'Pick shared categories (reply with numbers):\n\n' + catList + '\n\ne.g. *1,2,3,8,9,15*';
+
+  } else if (result.type === 'join_household') {
+    if (!result.code || !result.code.startsWith('hh_')) {
+      return 'I need a household code that starts with hh_, e.g. "join hh_a7k3".';
+    }
+    const existing = await getUser(from);
+    if (existing && existing.householdId) {
+      return 'You\'re already in a household (*' + existing.householdId + '*). Say "leave household" first.';
+    }
+    const joined = await joinHousehold(from, result.code);
+    if (joined.error === 'not_found') {
+      return '❌ Household code "' + result.code + '" not found. Check with your family for the right code.';
+    }
+    const sharedList = (joined.sharedCategories || []).join(', ') || 'none set';
+    const members = await getHouseholdMembers(from);
+    const joiner = await getUser(from);
+    const joinerName = (joiner && joiner.name) || 'Someone';
+    for (const member of members) {
+      if (member.phone === from) continue;
+      sendWhatsAppTo(member.phone, '👋 *' + joinerName + '* joined your household!').catch(() => {});
+    }
+    return '✅ *Joined household!*\n\n' +
+      '👨‍👩‍👧 Members: ' + joined.members.join(', ') + ' & you\n' +
+      '📂 Shared categories: ' + sharedList + '\n\n' +
+      'Your summaries now include shared household expenses.';
+
+  } else if (result.type === 'help') {
+    return await composeResponse('help', {}, user);
+
+  } else if (result.type === 'export') {
+    const crypto = require('crypto');
+    const token = crypto.randomUUID();
+    exportTokens.set(token, { phone: from, expires: Date.now() + 10 * 60 * 1000 });
+    const baseUrl = process.env.WEBHOOK_URL || '';
+    const exportUrl = baseUrl + '/export/' + token;
+    return '📥 Here\'s your export link (valid for 10 minutes):\n\n' + exportUrl + '\n\nThis will download a CSV with all your expenses.';
+
+  } else if (result.type === 'set_name') {
+    // Only meaningful during onboarding — otherwise treat as normal conversation
+    if (!user || user.name === 'User' || !user.name) {
+      const name = (result.name || '').trim();
+      if (name.length > 0 && name.length < 50) {
+        await updateUser(from, { name });
+        return await composeResponse('onboarding_name_received', { name }, null);
+      }
+    }
+    return await runConversation(raw, from, user);
+
   } else {
-    // Conversational fallback — Claude reads spending context and answers naturally
-    // Household users get combined household rows (shared categories included).
-    // Solo users try compact insights from materialized views + narrative search; fall back to raw rows.
+    return await runConversation(raw, from, user);
+  }
+}
+
+// Extracted: route any natural-language message through Claude with spending context.
+// Used as the fallback for unknown intents AND when structured handlers can't parse input.
+async function runConversation(raw, from, user) {
     let contextData;
     if (user && user.householdId) {
       contextData = await getHouseholdExpensesWithIds(from);
@@ -1019,7 +1039,6 @@ async function handleExpenseResult(result, raw, from, user) {
     } else {
       return await composeResponse('help', {}, user);
     }
-  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
