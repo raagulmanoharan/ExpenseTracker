@@ -81,6 +81,51 @@ async function batchAppendExpenses(transactions, phone) {
   if (error) throw new Error('batchAppendExpenses failed: ' + error.message);
 }
 
+// Find a recent expense that looks like a duplicate of the proposed one.
+// Returns the matching row or null. Match logic:
+//   - Exact same raw_message in last 60 min (almost certainly an accidental re-send)
+//   - Same amount + same/overlapping merchant in last `windowMinutes` minutes
+async function findRecentDuplicate(phone, expense, windowMinutes = 30) {
+  if (!phone || expense == null || expense.amount == null) return null;
+  const cutoff = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+  const { data } = await supabase.from('expenses')
+    .select('id, date, time, amount, category, merchant, note, raw_message, created_at')
+    .eq('phone', phone)
+    .eq('amount', expense.amount)
+    .gte('created_at', cutoff)
+    .order('created_at', { ascending: false })
+    .limit(5);
+
+  if (!data || data.length === 0) {
+    // Also catch identical raw_message in a wider window (60 min)
+    if (expense.raw) {
+      const wideCutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const { data: rawMatch } = await supabase.from('expenses')
+        .select('id, date, time, amount, category, merchant, note, raw_message, created_at')
+        .eq('phone', phone)
+        .eq('raw_message', expense.raw)
+        .gte('created_at', wideCutoff)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (rawMatch && rawMatch.length > 0) return rawMatch[0];
+    }
+    return null;
+  }
+
+  const merchantNorm = (expense.merchant || '').trim().toLowerCase();
+  for (const c of data) {
+    if (expense.raw && c.raw_message === expense.raw) return c;
+    const cMerchant = (c.merchant || '').trim().toLowerCase();
+    if (!merchantNorm && !cMerchant) return c; // both no merchant + same amount + recent → likely dupe
+    if (merchantNorm && cMerchant) {
+      if (merchantNorm === cMerchant) return c;
+      if (merchantNorm.length >= 3 && cMerchant.length >= 3 &&
+          (merchantNorm.includes(cMerchant) || cMerchant.includes(merchantNorm))) return c;
+    }
+  }
+  return null;
+}
+
 async function getAllRows(phone) {
   let query = supabase.from('expenses')
     .select('*')
@@ -901,6 +946,7 @@ module.exports = {
   // Expenses
   appendExpense, batchAppendExpenses, getAllRows,
   getRecentExpensesWithIds, getHouseholdExpensesWithIds,
+  findRecentDuplicate,
   // Summaries
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
   getBudgets, suggestBudgets, getBudgetStatus,

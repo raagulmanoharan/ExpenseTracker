@@ -5,7 +5,7 @@ const { CATEGORIES, getCategoryEmoji, getMonthName, getVisibleCategories } = req
 const { parseExpense, parseExpenseFromImage } = require('./parser');
 const { parsePDFStatement, deduplicateTransactions } = require('./pdf-parser');
 const {
-  initSheet, appendExpense, batchAppendExpenses, getAllRows,
+  initSheet, appendExpense, batchAppendExpenses, getAllRows, findRecentDuplicate,
   getMonthlySummary, getWeeklySummary, getOverspendAlerts,
   getBudgets, suggestBudgets, getBudgetStatus,
   checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteExpenseById, getExpenseById, bulkRecategorize,
@@ -39,6 +39,8 @@ const pendingSetup = new Map();    // progressive CC/salary setup: { stage, aske
 const setupHintsSent = new Map();  // phone → Set('cc', 'salary') — tracks what's been asked
 const pendingDelete = new Map();   // phone → { expenseId, details, askedAt } — awaiting yes/no confirmation
 const PENDING_DELETE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const pendingDuplicateConfirm = new Map(); // phone → { newExpense, existingMatch, askedAt }
+const PENDING_DUP_TTL_MS = 5 * 60 * 1000;
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 const startedAt = new Date();
@@ -181,6 +183,31 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       // Any other message: silently clear the pending delete and let normal flow continue.
       // (Don't trap the user in confirmation mode.)
       pendingDelete.delete(from);
+    }
+
+    // ── 0a-bis. Pending duplicate-expense confirmation ───────────────────
+    if (pendingDuplicateConfirm.has(from)) {
+      const pending = pendingDuplicateConfirm.get(from);
+      if (Date.now() - pending.askedAt > PENDING_DUP_TTL_MS) {
+        pendingDuplicateConfirm.delete(from);
+      } else if (/^(yes|y|confirm|add|add anyway|log it|do it|go ahead|ok|okay|not duplicate|not a duplicate)$/i.test(lower)) {
+        pendingDuplicateConfirm.delete(from);
+        try {
+          await appendExpense(pending.newExpense);
+          const e = pending.newExpense;
+          const amt = Number(e.amount).toLocaleString('en-IN');
+          twiml.message(`✅ Logged: ₹${amt} — ${e.category}${e.merchant ? ' · ' + e.merchant : ''}`);
+        } catch (err) {
+          twiml.message('Could not log that — ' + err.message);
+        }
+        return sendResponse();
+      } else if (/^(no|nope|cancel|skip|don't|same|duplicate|its same|same one|dont add)$/i.test(lower)) {
+        pendingDuplicateConfirm.delete(from);
+        twiml.message('👍 Skipped — kept the original entry.');
+        return sendResponse();
+      }
+      // Any other message: drop the state, route normally
+      pendingDuplicateConfirm.delete(from);
     }
 
     // ── 0b. Household setup — shared category selection + invite ──────────
@@ -642,6 +669,21 @@ async function handleExpenseResult(result, raw, from, user) {
       // Send list picker (max 10 items), fall back to text
       sendWhatsAppInteractive(from, 'category_picker', { '1': expDetail }, fallback).catch(() => {});
       return null;
+    }
+
+    // Proactive duplicate check — if a recent matching expense exists, ask before logging
+    try {
+      const dup = await findRecentDuplicate(from, pending);
+      if (dup) {
+        pendingDuplicateConfirm.set(from, { newExpense: pending, existingMatch: dup, askedAt: Date.now() });
+        const existingAmt = Number(dup.amount).toLocaleString('en-IN');
+        const minutesAgo = Math.max(1, Math.round((Date.now() - new Date(dup.created_at).getTime()) / 60000));
+        const merchantPart = dup.merchant ? ' · ' + dup.merchant : '';
+        return `⚠️ Looks like a duplicate.\n\nJust logged ${minutesAgo} min ago:\n   ₹${existingAmt} — ${dup.category}${merchantPart}\n\nLog this one too? Reply *yes* to add anyway, *no* to skip.`;
+      }
+    } catch (err) {
+      console.warn('[dedup] check failed:', err.message);
+      // If detection fails, proceed normally — don't block expense logging
     }
 
     await appendExpense(pending);
