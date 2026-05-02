@@ -18,7 +18,7 @@ const {
   getSpendingContext
 } = require('./db');
 const { scheduleHeartbeat, buildWeeklyDigest } = require('./scheduler');
-const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppInteractive } = require('./messaging');
+const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppInteractive, sendHouseholdNotification } = require('./messaging');
 const { handleConversation } = require('./conversation');
 const { composeResponse } = require('./responder');
 const { searchNarratives } = require('./insights');
@@ -161,7 +161,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
               const amt = Number(deleted.amount).toLocaleString('en-IN');
               const msg = `🗑️ ${name} deleted ₹${amt} — ${deleted.category}${deleted.merchant ? ' · ' + deleted.merchant : ''}`;
               for (const other of others) {
-                sendWhatsAppTo(other.phone, msg).catch(err =>
+                sendHouseholdNotification(other.phone, msg).catch(err =>
                   console.error('[household] delete notify failed:', err.message)
                 );
               }
@@ -331,7 +331,7 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       const joinerName = (joiner && joiner.name) || 'Someone';
       for (const member of members) {
         if (member.phone === from) continue;
-        sendWhatsAppTo(member.phone, '👋 *' + joinerName + '* joined your household!').catch(() => {});
+        sendHouseholdNotification(member.phone, '👋 *' + joinerName + '* joined your household!').catch(() => {});
       }
       return sendResponse();
     }
@@ -705,7 +705,7 @@ async function handleExpenseResult(result, raw, from, user) {
       const name = u.name || 'Someone';
       const msg = name + ' logged ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '');
       for (const other of others) {
-        sendWhatsAppTo(other.phone, msg).catch(err =>
+        sendHouseholdNotification(other.phone, msg).catch(err =>
           console.error('[household] notify failed:', err.message)
         );
       }
@@ -812,7 +812,7 @@ async function handleExpenseResult(result, raw, from, user) {
       const amt = Number(undone.amount).toLocaleString('en-IN');
       const msg = `↩️ ${name} undid ₹${amt} — ${undone.category}${undone.merchant ? ' · ' + undone.merchant : ''}`;
       for (const other of others) {
-        sendWhatsAppTo(other.phone, msg).catch(err =>
+        sendHouseholdNotification(other.phone, msg).catch(err =>
           console.error('[household] undo notify failed:', err.message)
         );
       }
@@ -889,7 +889,7 @@ async function handleExpenseResult(result, raw, from, user) {
     await leaveHousehold(from);
     for (const member of members) {
       if (member.phone === from) continue;
-      sendWhatsAppTo(member.phone, '👋 *' + leaverName + '* left the household.').catch(() => {});
+      sendHouseholdNotification(member.phone, '👋 *' + leaverName + '* left the household.').catch(() => {});
     }
     return '👋 You\'ve left the household. Your summaries now show only your expenses.';
 
@@ -972,7 +972,7 @@ async function handleExpenseResult(result, raw, from, user) {
     const joinerName = (joiner && joiner.name) || 'Someone';
     for (const member of members) {
       if (member.phone === from) continue;
-      sendWhatsAppTo(member.phone, '👋 *' + joinerName + '* joined your household!').catch(() => {});
+      sendHouseholdNotification(member.phone, '👋 *' + joinerName + '* joined your household!').catch(() => {});
     }
     return '✅ *Joined household!*\n\n' +
       '👨‍👩‍👧 Members: ' + joined.members.join(', ') + ' & you\n' +
@@ -1049,7 +1049,7 @@ async function runConversation(raw, from, user) {
           const amt = Number(edited.amount).toLocaleString('en-IN');
           const msg = `✏️ ${name} edited ₹${amt} ${edited.category}${edited.merchant ? ' · ' + edited.merchant : ''} — ${conv.field} → ${conv.value}`;
           for (const other of others) {
-            sendWhatsAppTo(other.phone, msg).catch(err =>
+            sendHouseholdNotification(other.phone, msg).catch(err =>
               console.error('[household] edit notify failed:', err.message)
             );
           }

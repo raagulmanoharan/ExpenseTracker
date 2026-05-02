@@ -15,6 +15,11 @@ const INTERACTIVE_SIDS = {
   duplicate_confirm:      'HXc5643f5b5e641cf1048144c6c0bfd97a',
 };
 
+// Plain-text templates for outside 24h session sends (must be approved)
+const TEMPLATE_SIDS = {
+  household_update: 'HXc61e733e7a7927308095cd26816498d2',
+};
+
 let _client = null;
 function getClient() {
   if (!_client) {
@@ -83,6 +88,39 @@ async function sendWhatsAppInteractive(to, templateKey, variables, fallbackBody)
   }
 }
 
+// Send a household notification — works in OR out of the 24h session window.
+// Tries free-form text first (cheaper, no template fee). If Twilio rejects it
+// because the recipient hasn't messaged the bot in 24+ hours, retry with the
+// approved budgy_household_update template.
+async function sendHouseholdNotification(to, body) {
+  const client = getClient();
+  if (!client || !FROM) {
+    console.warn('[messaging] Twilio not configured, skipping household notification');
+    return;
+  }
+  try {
+    await client.messages.create({ from: FROM, to, body });
+  } catch (err) {
+    // Twilio error 63016 = outside 24h session window; also retry on generic failures
+    const code = err && (err.code || err.status);
+    const isSessionError = code === 63016 || /outside.*window|24.?hour|template/i.test(err.message || '');
+    if (!isSessionError) {
+      console.error('[messaging] household notification failed:', err.message);
+      return;
+    }
+    try {
+      await client.messages.create({
+        from: FROM,
+        to,
+        contentSid: TEMPLATE_SIDS.household_update,
+        contentVariables: JSON.stringify({ '1': body })
+      });
+    } catch (templateErr) {
+      console.error('[messaging] household notification template fallback failed:', templateErr.message);
+    }
+  }
+}
+
 // Broadcast to all users (for scheduled nudges)
 async function sendWhatsAppBroadcast(body, getAllUsers) {
   const users = await getAllUsers();
@@ -114,7 +152,9 @@ module.exports = {
   sendWhatsAppImageTo,
   sendWhatsAppTemplate,
   sendWhatsAppInteractive,
+  sendHouseholdNotification,
   sendWhatsAppBroadcast,
   sendWhatsAppImageBroadcast,
-  INTERACTIVE_SIDS
+  INTERACTIVE_SIDS,
+  TEMPLATE_SIDS
 };
