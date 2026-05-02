@@ -817,6 +817,19 @@ async function updateSharedCategories(phone, categories) {
   return { updated: true, categories };
 }
 
+// Propagate salary cycle settings to all household members so summaries align.
+// Returns { updated: true, members: [phones] } when synced, or null if not in a household.
+async function syncHouseholdSalary(phone, salaryType, salaryDay) {
+  const user = await getUser(phone);
+  if (!user || !user.householdId) return null;
+  const members = await getHouseholdMembers(phone);
+  const targets = members.filter(m => m.phone !== phone);
+  for (const m of targets) {
+    await updateUser(m.phone, { salaryType, salaryDay: salaryDay || null });
+  }
+  return { updated: true, members: targets.map(m => m.phone) };
+}
+
 // Returns the union of every household member's shared categories.
 // Robust to drift — if any member considers a category shared, it counts.
 // Self-heals by re-syncing the union back to all members when drift is detected.
@@ -960,7 +973,7 @@ module.exports = {
   // Household
   generateHouseholdId, getHouseholdPhones, getHouseholdMembers, getHouseholdRows,
   createHousehold, joinHousehold, leaveHousehold, updateSharedCategories,
-  getHouseholdSharedCategories,
+  getHouseholdSharedCategories, syncHouseholdSalary,
   // Export
   getExpensesForExport,
   // Spending insights (materialized views)

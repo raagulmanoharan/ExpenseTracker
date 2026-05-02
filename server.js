@@ -13,7 +13,7 @@ const {
   updateLastMessageAt,
   parseSalaryInput, parseStatementInput, getBillingCycleAdvice,
   getHouseholdRows, getHouseholdMembers, createHousehold, joinHousehold, leaveHousehold, updateSharedCategories,
-  getHouseholdSharedCategories,
+  getHouseholdSharedCategories, syncHouseholdSalary,
   getRecentExpensesWithIds, getHouseholdExpensesWithIds, getExpensesForExport,
   getSpendingContext
 } = require('./db');
@@ -828,6 +828,21 @@ async function handleExpenseResult(result, raw, from, user) {
       await updateUser(from, { salaryType: parsed.type, salaryDay: parsed.day || 0 });
       const label = parsed.type === 'fixed' ? 'the ' + parsed.day + 'th' :
                     parsed.type === 'last' ? 'end of month' : 'last working day';
+
+      // Propagate to household members so summaries stay aligned.
+      // Notify each member of the new shared cycle.
+      (async () => {
+        const sync = await syncHouseholdSalary(from, parsed.type, parsed.day);
+        if (!sync || !sync.members.length) return;
+        const setterName = (user && user.name) || 'A household member';
+        const msg = `📅 ${setterName} set your household salary cycle to *${label}*. Summaries now align across the household.`;
+        for (const phone of sync.members) {
+          sendHouseholdNotification(phone, msg).catch(err =>
+            console.error('[household] salary sync notify failed:', err.message)
+          );
+        }
+      })().catch(err => console.error('[household] salary sync failed:', err.message));
+
       return await composeResponse('salary_set', { label }, user);
     }
     // Couldn't extract a salary — don't trap with a canned message. Let Claude handle it.
