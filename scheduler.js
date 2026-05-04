@@ -8,10 +8,14 @@ const {
   getCyclePaceAnalysis,
   getLastEntryInfo,
   getAllUsers,
-  isWithinSessionWindow
+  isWithinSessionWindow,
+  listExpensesInRange, getUser, getMonthlySpendByCard,
+  getSalaryCycleBounds
 } = require('./db');
 const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppTemplate, sendWhatsAppImageBroadcast } = require('./messaging');
 const { generateAllInsights } = require('./insights');
+const { getPersonalizedPlaybook } = require('./analytics');
+const { getFallback: composeFallback } = require('./responder');
 
 // ─── Content Template SIDs (for outside 24h session window) ─────────────────
 const TEMPLATE_SIDS = {
@@ -569,6 +573,39 @@ const NUDGE_CHECKS = [
         "Today still blank. Worth a quick log before you call it a night?",
       ];
       return msgs[Math.floor(Math.random() * msgs.length)];
+    }
+  },
+
+  // Personalized card-rewards playbook — fires once per salary cycle, in the
+  // first 2 days of a new cycle. Surfaces actionable card/portal/voucher
+  // optimization for the user's top spending categories.
+  {
+    id: 'playbook_digest',
+    description: 'Monthly card-rewards optimization playbook (cycle start)',
+    cadenceHours: 24 * 25,   // ~25 days; cycle-day check below pins it monthly
+    windowStart: 9,          // 9-11 AM IST
+    windowEnd: 11,
+    priority: 6,
+    check: async function(user) {
+      if (!user || !user.phone) return null;
+      const userConfig = user.salaryType ? { salaryType: user.salaryType, salaryDay: user.salaryDay } : null;
+      const { cycleStart } = getSalaryCycleBounds(new Date(), userConfig);
+      const today = new Date();
+      const daysIntoCycle = Math.floor((today - cycleStart) / (1000 * 60 * 60 * 24));
+      // Only fire within first 2 days of the new cycle.
+      if (daysIntoCycle < 0 || daysIntoCycle > 2) return null;
+
+      const playbook = await getPersonalizedPlaybook(user.phone, {
+        db: { listExpensesInRange, getUser },
+        user,
+        mtdLookup: function(cardKey) { return getMonthlySpendByCard(user.phone, cardKey); }
+      });
+      if (!playbook.entries || playbook.entries.length === 0) return null;
+
+      // Use the static fallback formatter (predictable, no API call) and
+      // prepend a proactive intro so the user knows why this arrived.
+      const body = composeFallback('playbook', playbook);
+      return '☀️ *Start of a new cycle — here\'s your optimization playbook for the next 30 days*\n\n' + body;
     }
   }
 ];

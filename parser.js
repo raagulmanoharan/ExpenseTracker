@@ -51,6 +51,9 @@ Missing rewards ("missing rewards", "wrong card", "what did I miss", "where did 
 Milestone progress ("milestone", "milestone progress", "voucher progress", "spend target", "how close to milestone", "Taj voucher progress"):
 {"type":"milestone_progress"}
 
+Personalized playbook ("playbook", "optimization", "how to maximize", "how should I spend", "best way to spend", "show me my playbook", "optimize my spending"):
+{"type":"playbook"}
+
 HOUSEHOLD INTENTS:
 
 Create a household ("create household", "create a household", "I want to add household", "make me a family group", "set up household tracking"):

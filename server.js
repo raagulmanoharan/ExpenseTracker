@@ -28,7 +28,7 @@ const { handleConversation } = require('./conversation');
 const { composeResponse } = require('./responder');
 const { searchNarratives } = require('./insights');
 const { suggestForExpense: suggestCardStrategy, extractCardHint } = require('./card-strategy');
-const { getRewardsReport, getMissingRewards, getMilestoneProgress } = require('./analytics');
+const { getRewardsReport, getMissingRewards, getMilestoneProgress, getPersonalizedPlaybook } = require('./analytics');
 
 function fmtCycle(start, end) {
   const fmt = d => d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
@@ -995,6 +995,15 @@ async function handleExpenseResult(result, raw, from, user) {
       user: u
     });
     return await composeResponse('milestone_progress', progress, user);
+
+  } else if (result.type === 'playbook') {
+    const u = await getUser(from);
+    const playbook = await getPersonalizedPlaybook(from, {
+      db: { listExpensesInRange, getUser },
+      user: u,
+      mtdLookup: (cardKey) => getMonthlySpendByCard(from, cardKey)
+    });
+    return await composeResponse('playbook', playbook, user);
 
   // ─── Household intents ───────────────────────────────────────────────────
   } else if (result.type === 'create_household') {

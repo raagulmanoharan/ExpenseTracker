@@ -299,4 +299,101 @@ function shiftDate(yyyyMmDd, deltaDays) {
   return d.toISOString().split('T')[0];
 }
 
-module.exports = { getRewardsReport, getMissingRewards, getMilestoneProgress, walkCycle };
+/**
+ * Personalized "playbook" — for the user's top spending categories from the
+ * last 90 days, recommend the optimal card + actionable flow per category
+ * (which portal to route through, voucher to load, etc.). Estimated
+ * monthly upside per category + total.
+ *
+ * Returns: {
+ *   periodStart, periodEnd,
+ *   entries: [{
+ *     category, monthlyAvgSpend, txnCount, sampleMerchants,
+ *     bestCard, bestCardUserKey, bestMultiplier, bestRuleNote,
+ *     hasVoucherTrick, voucherTrick, sourceUrl,
+ *     estimatedMonthlyUpsideInr
+ *   }],
+ *   totalMonthlyUpsideInr,
+ *   skipped: [{ category, reason }]
+ * }
+ */
+async function getPersonalizedPlaybook(phone, opts = {}) {
+  const user = opts.user || await opts.db.getUser(phone);
+  const owned = matchUserCards(user);
+  if (owned.length === 0) {
+    return { entries: [], totalMonthlyUpsideInr: 0, skipped: [], periodStart: null, periodEnd: null };
+  }
+
+  const lookbackDays = opts.lookbackDays || 90;
+  const periodEnd = todayStr();
+  const periodStart = shiftDate(periodEnd, -lookbackDays);
+  const months = lookbackDays / 30;
+
+  const expenses = await opts.db.listExpensesInRange(phone, periodStart, periodEnd);
+
+  // Aggregate by category — exclude Other, Credit Card Payment (pass-through),
+  // and the structurally-excluded categories (rent etc.) since the engine
+  // won't recommend anything actionable there anyway.
+  const skipCats = new Set(['Other', 'Credit Card Payment', 'Family Transfer']);
+  const byCategory = {};
+  for (const e of expenses) {
+    if (!e.category || skipCats.has(e.category)) continue;
+    if (!byCategory[e.category]) byCategory[e.category] = { total: 0, count: 0, merchants: new Set() };
+    byCategory[e.category].total += Number(e.amount);
+    byCategory[e.category].count++;
+    if (e.merchant) byCategory[e.category].merchants.add(e.merchant);
+  }
+
+  // Top categories by spend.
+  const ranked = Object.entries(byCategory)
+    .map(([cat, s]) => ({
+      category: cat,
+      total: s.total,
+      monthlyAvg: s.total / months,
+      txnCount: s.count,
+      sampleMerchants: [...s.merchants].slice(0, 3)
+    }))
+    .filter(x => x.total >= 500) // de-noise
+    .sort((a, b) => b.total - a.total)
+    .slice(0, opts.maxCategories || 7);
+
+  // For each top category, find the optimal card via the engine. Use a
+  // representative merchant from the sample for merchant-keyword matching.
+  const { suggestForExpense } = require('./card-strategy');
+  const entries = [];
+  const skipped = [];
+  for (const r of ranked) {
+    // Use monthlyAvg as the "next purchase" amount so the upside scales right.
+    const tip = await suggestForExpense(
+      { amount: r.monthlyAvg, category: r.category, merchant: r.sampleMerchants[0] || null },
+      user,
+      { mtdLookup: opts.mtdLookup, mtdByCard: opts.mtdByCard }
+    );
+    if (!tip) {
+      skipped.push({ category: r.category, reason: 'no special rule beats base earn' });
+      continue;
+    }
+    // Detect whether the rule note describes a voucher/portal flow.
+    const note = tip.bestRuleNote || '';
+    const hasVoucherTrick = /portal|voucher|load|smartbuy|reward multiplier|gyftr|live\+|tastecard|travel edge/i.test(note);
+    entries.push({
+      category: r.category,
+      monthlyAvgSpend: round2(r.monthlyAvg),
+      txnCount: r.txnCount,
+      sampleMerchants: r.sampleMerchants,
+      bestCard: tip.bestCard,
+      bestCardUserKey: tip.bestCardUserKey,
+      bestMultiplier: tip.bestMultiplier,
+      bestRuleNote: note,
+      hasVoucherTrick,
+      voucherTrick: hasVoucherTrick ? note : null,
+      sourceUrl: tip.source || null,
+      estimatedMonthlyUpsideInr: round2(tip.upsideInr)
+    });
+  }
+
+  const totalMonthlyUpsideInr = round2(entries.reduce((s, e) => s + e.estimatedMonthlyUpsideInr, 0));
+  return { periodStart, periodEnd, entries, totalMonthlyUpsideInr, skipped };
+}
+
+module.exports = { getRewardsReport, getMissingRewards, getMilestoneProgress, getPersonalizedPlaybook, walkCycle };

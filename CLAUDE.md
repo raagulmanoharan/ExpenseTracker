@@ -46,7 +46,7 @@ The heartbeat ticks every 30 minutes. On each tick:
 3. Checks return a message string (send it) or null (not actionable, mark as checked).
 4. State (`nudgeId:phone -> lastSentTimestamp`) persists to `.heartbeat-state.json`.
 
-9 nudge types: `smart_nudge` (projection-based spending insight, priority 10), `pre_statement` (CC timing advice, 9), `overspend_alert` (baseline comparison, 9), `morning_followup` (yesterday blank, 8), `lapse_nudge` (3 days silent, 7), `evening_checkin` (today blank, 5), `daily_nudge` (generic reminder, 3, **skips if user logged today**), `friday_digest` (weekly summary + chart, 10, Friday only), `household_discovery` (suggest household feature, 2, after 2+ weeks solo usage).
+10 nudge types: `smart_nudge` (projection-based spending insight, priority 10), `pre_statement` (CC timing advice, 9), `overspend_alert` (baseline comparison, 9), `morning_followup` (yesterday blank, 8), `lapse_nudge` (3 days silent, 7), `playbook_digest` (monthly card-rewards optimization at cycle start, 6), `evening_checkin` (today blank, 5), `daily_nudge` (generic reminder, 3, **skips if user logged today**), `friday_digest` (weekly summary + chart, 10, Friday only), `household_discovery` (suggest household feature, 2, after 2+ weeks solo usage).
 
 ### Key patterns
 - **Claude routes everything**: parser.js classifies intent, conversation.js handles data questions. No regex-based routing. Regex is only used for structured extraction AFTER Claude has classified the intent.
@@ -87,6 +87,10 @@ Three WhatsApp commands surface the personalization layer, all backed by `analyt
 - **`rewards report`** — per-card actual vs theoretical rewards this cycle. Effective return %, gap. Uses cap-aware scoring with per-card MTD tracked across the cycle (date-ordered walk).
 - **`missing rewards`** — top 5 transactions where you used the wrong card. Each shows: what you used, what was optimal, and how much INR you missed. Aggregated total at the top.
 - **`milestone progress`** — YTD spend per card vs each milestone tier (Plat Travel 1.9L/4L/7L, Atlas Silver/Gold/Platinum). Shows percent-to-tier and ₹ remaining.
+- **`playbook`** — personalized 90-day-spend-driven optimization plan. Top 7 categories ranked by total spend; per category surfaces optimal card + voucher/portal flow ("load Amazon Pay via Reward Multiplier portal first, then pay from balance"). Total monthly upside if user follows the plan. Excludes Rent, Other, Family Transfer, Credit Card Payment.
+
+Proactive surfacing:
+- The `playbook_digest` scheduler nudge (priority 6, 9-11 IST window) fires within the first 2 days of each new salary cycle, sending the playbook unsolicited so users see optimization opportunities at the start of each cycle. Uses the static fallback formatter (no API call) for predictability.
 
 Engine details:
 - All three pull from `expenses` where `card IS NOT NULL`. Untagged rows are excluded — the engine doesn't know which card was used.
