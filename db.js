@@ -51,7 +51,7 @@ function rowToArray(row) {
 }
 
 // ─── Expenses ───────────────────────────────────────────────────────────────
-async function appendExpense({ amount, category, merchant, note, raw, phone }) {
+async function appendExpense({ amount, category, merchant, note, raw, phone, card }) {
   const now = new Date();
   const { error } = await supabase.from('expenses').insert({
     phone,
@@ -61,7 +61,8 @@ async function appendExpense({ amount, category, merchant, note, raw, phone }) {
     category: category || 'Other',
     merchant: merchant || null,
     note: note || null,
-    raw_message: raw || null
+    raw_message: raw || null,
+    card: card || null
   });
   if (error) throw new Error('appendExpense failed: ' + error.message);
 }
@@ -269,6 +270,31 @@ async function getMonthlySummary(phone) {
     count,
     byCategory
   };
+}
+
+// Sum of MTD spend (current salary cycle) on a specific card. Used by the
+// card-rewards engine to enforce capPerMonth thresholds. Only counts rows
+// where the `card` column matches (case-insensitive). Returns 0 if the user
+// has no tagged expenses on that card yet.
+async function getMonthlySpendByCard(phone, card) {
+  if (!phone || !card) return 0;
+  const user = await getUser(phone);
+  const userConfig = user && user.salaryType ? { salaryType: user.salaryType, salaryDay: user.salaryDay } : null;
+  const { cycleStart, cycleEnd } = getSalaryCycleBounds(new Date(), userConfig);
+  const startStr = cycleStart.toISOString().split('T')[0];
+  const endStr = cycleEnd.toISOString().split('T')[0];
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('amount')
+    .eq('phone', phone)
+    .ilike('card', card)
+    .gte('date', startStr)
+    .lte('date', endStr);
+  if (error) {
+    console.error('[getMonthlySpendByCard]', error.message);
+    return 0;
+  }
+  return (data || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
 }
 
 async function getWeeklySummary(phone) {
@@ -961,7 +987,7 @@ module.exports = {
   getRecentExpensesWithIds, getHouseholdExpensesWithIds,
   findRecentDuplicate,
   // Summaries
-  getMonthlySummary, getWeeklySummary, getOverspendAlerts,
+  getMonthlySummary, getWeeklySummary, getOverspendAlerts, getMonthlySpendByCard,
   getBudgets, suggestBudgets, getBudgetStatus,
   checkAnomaly, undoLast,
   getCyclePaceAnalysis, getLastEntryInfo,

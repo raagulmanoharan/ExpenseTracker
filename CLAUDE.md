@@ -59,11 +59,14 @@ The heartbeat ticks every 30 minutes. On each tick:
 After every logged expense, `card-strategy.js` evaluates the user's owned cards against a static knowledge base (`card-strategies.json`) and may append a one-line forward-looking tip ("next time use *X* at 5x → ~₹Y more").
 
 - **Auto-suggest, opportunity-only**: only fires when (a) the category has a known multiplier on at least one owned card, (b) `upsideInr ≥ 50` vs the best owned card's vanilla base earn. Otherwise silent.
-- **Forward-looking framing**: Budgy doesn't know which card you actually used, so the tip is always "next time", never "you should have".
+- **Forward-looking framing**: tip is always "next time", never "you should have", because Budgy can't always determine which card was used.
+- **Card-per-expense tracking**: `expenses.card` (nullable TEXT) stores the card name when extractable from the user's message. `extractCardHint(message, user)` regex-matches owned-card aliases. Empty when not specified — no prompt-on-every-expense friction.
+- **Cap-aware scoring**: each rule supports `capPerMonth` + `capType`. `limit` (default) — multiplier applies up to cap, base above. `threshold` (e.g. Magnus 17.5x) — multiplier only applies on spend ABOVE the cap. Engine fetches per-card MTD via `db.getMonthlySpendByCard` (current salary cycle) and prorates accordingly. Without MTD data, threshold rules are conservatively held off (no false 17.5x on a Rs.2k dinner).
 - **Card matching**: KB cards have `aliases[]` (uppercased, normalized). Engine matches them against `user.statementDates` keys with substring containment in either direction. Edit aliases when a new variant slips through.
 - **Grey-area gating**: voucher tricks flagged `greyArea: true` (rent loops, MCC abuse) are off by default. Pass `{ allowGreyArea: true }` to opt in (no UI toggle yet).
 - **Updating the KB**: edit `card-strategies.json` directly. Every multiplier, exclusion, and trick cites a source — add the source URL alongside any new entry. Issuer devaluations are the main reason this file ages; check TechnoFino + LiveFromALounge before changing numbers.
-- **Tests**: `test/card-strategy.test.js` covers fixture-based routing + a real-KB smoke test that loads the live JSON.
+- **Smoke testing**: `npm run test:card-tip` for an interactive REPL or one-shot evaluation. Use `--phone whatsapp:+91XXXX` to load real cards + real MTD from Supabase without writing anything.
+- **Tests**: `test/card-strategy.test.js` covers fixture-based routing, cap-aware scoring (threshold + limit), `extractCardHint`, grey-area gating, and a real-KB smoke test.
 
 ### Household system
 Two or more users can form a household via share codes. Each user messages Budgy 1:1, but summaries and nudges reflect combined household spending for shared categories.

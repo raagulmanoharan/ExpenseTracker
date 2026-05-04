@@ -94,6 +94,7 @@
           "multiplier": 17.5,
           "merchantsLike": [],
           "capPerMonth": 150000,
+          "capType": "threshold",
           "note": "35 EDGE points per Rs.200 (=17.5 per Rs.100) on incremental spends ABOVE Rs.1.5L/month, capped at credit limit + Rs.1.5L. Post-Jun 2025 devaluation.",
           "source": "https://technofino.in/community/threads/axis-magnus-credit-card-devalued-t-c-update-may-2025.41005/"
         }
@@ -161,7 +162,8 @@
           "multiplier": 5,
           "merchantsLike": ["airlines", "hotel", "Travel EDGE"],
           "capPerMonth": 200000,
-          "note": "5 EDGE Miles per Rs.100 on direct travel (airlines, hotels, Travel EDGE), capped Rs.2L/month.",
+          "capType": "limit",
+          "note": "5 EDGE Miles per Rs.100 on direct travel (airlines, hotels, Travel EDGE), capped Rs.2L/month. Above cap reverts to base 2.",
           "source": "https://livefromalounge.com/axis-bank-atlas-credit-card-devaluation-2024/"
         }
       ],

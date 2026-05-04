@@ -60,19 +60,31 @@ async function loadUser() {
 function fmt(tip) {
   if (!tip) return '  💤 no card tip (no special rule fires, or upside < ₹50)';
   const grey = tip.greyArea ? '  ⚠️ grey-area' : '';
+  const capInfo = tip.capPerMonth
+    ? `     cap: ${tip.capType} ₹${Number(tip.capPerMonth).toLocaleString('en-IN')}/mo · MTD on this card so far ₹${Number(tip.mtdSoFar || 0).toLocaleString('en-IN')}`
+    : null;
   return [
     `  💳 ${tip.bestCard} — ${tip.bestMultiplier}x`,
     tip.bestRuleNote ? `     note: ${tip.bestRuleNote}` : null,
+    capInfo,
     `     best ₹${tip.bestValueInr} · baseline ₹${tip.baselineValueInr} · upside ₹${tip.upsideInr}${grey}`,
     tip.source ? `     source: ${tip.source}` : null
   ].filter(Boolean).join('\n');
+}
+
+async function buildMtdLookup(user) {
+  // If we loaded a real user from Supabase, use the real MTD-per-card. Otherwise zero.
+  if (!opts.phone) return undefined;
+  const { getMonthlySpendByCard } = require('../db');
+  return (cardKey) => getMonthlySpendByCard(opts.phone, cardKey);
 }
 
 async function evaluate(user, expense, label) {
   const header = label ? `\n→ ${label}` : '\n→';
   console.log(header);
   console.log(`   ₹${expense.amount} · ${expense.category}${expense.merchant ? ' · ' + expense.merchant : ''}`);
-  const tip = suggestForExpense(expense, user, { allowGreyArea: opts.allowGreyArea });
+  const mtdLookup = await buildMtdLookup(user);
+  const tip = await suggestForExpense(expense, user, { allowGreyArea: opts.allowGreyArea, mtdLookup });
   console.log(fmt(tip));
 }
 
