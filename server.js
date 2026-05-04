@@ -6,7 +6,7 @@ const { parseExpense, parseExpenseFromImage } = require('./parser');
 const { parsePDFStatement, deduplicateTransactions } = require('./pdf-parser');
 const {
   initSheet, appendExpense, batchAppendExpenses, getAllRows, findRecentDuplicate,
-  getMonthlySummary, getWeeklySummary, getOverspendAlerts,
+  getMonthlySummary, getWeeklySummary, getOverspendAlerts, getMonthlySpendByCard,
   getBudgets, suggestBudgets, getBudgetStatus,
   checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteExpenseById, getExpenseById, bulkRecategorize,
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount,
@@ -22,6 +22,7 @@ const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppInteractive, sendHouseh
 const { handleConversation } = require('./conversation');
 const { composeResponse } = require('./responder');
 const { searchNarratives } = require('./insights');
+const { suggestForExpense: suggestCardStrategy, extractCardHint } = require('./card-strategy');
 
 const app = express();
 app.use(express.urlencoded({ extended: false, verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
@@ -658,7 +659,8 @@ async function processPDFAsync(from, mediaUrl, user) {
 async function handleExpenseResult(result, raw, from, user) {
   if (result.type === 'expense') {
     const { amount, category, merchant, note, confidence } = result;
-    const pending = { amount, category, merchant, note, raw, phone: from };
+    const cardHint = extractCardHint(raw, user);
+    const pending = { amount, category, merchant, note, raw, phone: from, card: cardHint };
 
     if (confidence < 60) {
       pendingCategory.set(from, pending);
@@ -767,13 +769,25 @@ async function handleExpenseResult(result, raw, from, user) {
       return null;
     }
 
+    let cardTip = null;
+    try {
+      cardTip = await suggestCardStrategy(
+        { amount, category, merchant },
+        freshUser || user,
+        { mtdLookup: (cardKey) => getMonthlySpendByCard(from, cardKey) }
+      );
+    } catch (e) {
+      console.error('[card-strategy] suggestion failed:', e.message);
+    }
+
     return await composeResponse('expense_logged', {
       amount, category, merchant, note,
       monthlyTotal: monthly.total, monthlyCount: monthly.count,
       cycleLabel: monthly.cycleLabel, breakdown: monthly.breakdown,
       anomaly: anomaly || null,
       budgetWarning,
-      overspend: overspend ? overspend.alerts.map(a => a.category + ' +' + a.pct + '%').join(', ') : null
+      overspend: overspend ? overspend.alerts.map(a => a.category + ' +' + a.pct + '%').join(', ') : null,
+      cardTip
     }, user);
 
   } else if (result.type === 'summary_monthly') {

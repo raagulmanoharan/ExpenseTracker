@@ -35,13 +35,19 @@ CREATE TABLE expenses (
   merchant        TEXT,
   note            TEXT,
   raw_message     TEXT,
+  card            TEXT,
   created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_expenses_phone ON expenses (phone);
 CREATE INDEX idx_expenses_phone_date ON expenses (phone, date DESC);
 CREATE INDEX idx_expenses_phone_category ON expenses (phone, category);
+CREATE INDEX idx_expenses_phone_card ON expenses (phone, card) WHERE card IS NOT NULL;
 CREATE INDEX idx_expenses_created_at ON expenses (created_at DESC);
+
+-- For existing deployments, run this migration:
+--   ALTER TABLE expenses ADD COLUMN IF NOT EXISTS card TEXT;
+--   CREATE INDEX IF NOT EXISTS idx_expenses_phone_card ON expenses (phone, card) WHERE card IS NOT NULL;
 
 -- ─── Budgets Table ─────────────────────────────────────────────────
 CREATE TABLE budgets (
