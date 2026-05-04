@@ -297,6 +297,58 @@ async function getMonthlySpendByCard(phone, card) {
   return (data || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
 }
 
+// ─── CC statement helpers ─────────────────────────────────────────────────
+async function listExpensesInRange(phone, fromDate, toDate) {
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('id, date, amount, card, statement_id, merchant, category, note, raw_message')
+    .eq('phone', phone)
+    .gte('date', fromDate)
+    .lte('date', toDate);
+  if (error) throw new Error('listExpensesInRange: ' + error.message);
+  return data || [];
+}
+
+async function updateExpense(id, patch) {
+  const { error } = await supabase.from('expenses').update(patch).eq('id', id);
+  if (error) throw new Error('updateExpense: ' + error.message);
+}
+
+async function insertExpense(row) {
+  const { data, error } = await supabase.from('expenses').insert(row).select('id').single();
+  if (error) throw new Error('insertExpense: ' + error.message);
+  return data;
+}
+
+async function insertCcStatement(row) {
+  // Idempotent: if (phone, card, period_start, period_end) exists, return existing id.
+  const existing = await supabase
+    .from('cc_statements')
+    .select('id')
+    .eq('phone', row.phone)
+    .eq('card', row.card)
+    .eq('period_start', row.period_start)
+    .eq('period_end', row.period_end)
+    .maybeSingle();
+  if (existing.data) return existing.data;
+  const { data, error } = await supabase.from('cc_statements').insert(row).select('id').single();
+  if (error) throw new Error('insertCcStatement: ' + error.message);
+  return data;
+}
+
+async function updateCcStatement(id, patch) {
+  const { error } = await supabase.from('cc_statements').update(patch).eq('id', id);
+  if (error) throw new Error('updateCcStatement: ' + error.message);
+}
+
+async function listCcStatements(phone, { card } = {}) {
+  let q = supabase.from('cc_statements').select('*').eq('phone', phone).order('period_end', { ascending: false });
+  if (card) q = q.eq('card', card);
+  const { data, error } = await q;
+  if (error) throw new Error('listCcStatements: ' + error.message);
+  return data || [];
+}
+
 async function getWeeklySummary(phone) {
   const rows = phone ? await getHouseholdRows(phone) : await getAllRows();
   const now = new Date();
@@ -988,6 +1040,8 @@ module.exports = {
   findRecentDuplicate,
   // Summaries
   getMonthlySummary, getWeeklySummary, getOverspendAlerts, getMonthlySpendByCard,
+  listExpensesInRange, updateExpense, insertExpense,
+  insertCcStatement, updateCcStatement, listCcStatements,
   getBudgets, suggestBudgets, getBudgetStatus,
   checkAnomaly, undoLast,
   getCyclePaceAnalysis, getLastEntryInfo,

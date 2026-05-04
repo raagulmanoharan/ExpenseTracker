@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "test": "jest --forceExit",
     "test:card-tip": "node scripts/test-card-tip.js",
-    "backfill:cards": "node scripts/backfill-cards.js"
+    "backfill:cards": "node scripts/backfill-cards.js",
+    "import:statements": "node scripts/import-statements.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.20.0",

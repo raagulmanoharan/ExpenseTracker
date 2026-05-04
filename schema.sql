@@ -36,6 +36,7 @@ CREATE TABLE expenses (
   note            TEXT,
   raw_message     TEXT,
   card            TEXT,
+  statement_id    UUID,
   created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -43,11 +44,43 @@ CREATE INDEX idx_expenses_phone ON expenses (phone);
 CREATE INDEX idx_expenses_phone_date ON expenses (phone, date DESC);
 CREATE INDEX idx_expenses_phone_category ON expenses (phone, category);
 CREATE INDEX idx_expenses_phone_card ON expenses (phone, card) WHERE card IS NOT NULL;
+CREATE INDEX idx_expenses_statement_id ON expenses (statement_id) WHERE statement_id IS NOT NULL;
 CREATE INDEX idx_expenses_created_at ON expenses (created_at DESC);
 
 -- For existing deployments, run this migration:
 --   ALTER TABLE expenses ADD COLUMN IF NOT EXISTS card TEXT;
+--   ALTER TABLE expenses ADD COLUMN IF NOT EXISTS statement_id UUID;
 --   CREATE INDEX IF NOT EXISTS idx_expenses_phone_card ON expenses (phone, card) WHERE card IS NOT NULL;
+--   CREATE INDEX IF NOT EXISTS idx_expenses_statement_id ON expenses (statement_id) WHERE statement_id IS NOT NULL;
+
+-- ─── CC Statements Table ───────────────────────────────────────────
+-- One row per imported credit card statement PDF. Source-of-truth provenance
+-- for every reconciled expense (expenses.statement_id FK). Re-importing the
+-- same statement (same phone + card + period) is idempotent — old rows get
+-- updated, conflicts surface for review.
+CREATE TABLE cc_statements (
+  id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  phone           TEXT NOT NULL REFERENCES users(phone) ON DELETE CASCADE,
+  card            TEXT NOT NULL,
+  period_start    DATE NOT NULL,
+  period_end      DATE NOT NULL,
+  statement_date  DATE,
+  total_spend     NUMERIC(12, 2),
+  total_credits   NUMERIC(12, 2),
+  closing_balance NUMERIC(12, 2),
+  txn_count       INTEGER NOT NULL DEFAULT 0,
+  source          TEXT NOT NULL,                -- 'whatsapp' | 'supabase_bucket' | 'local'
+  source_path     TEXT,                          -- bucket key / local path / twilio media url
+  imported_at     TIMESTAMPTZ DEFAULT NOW(),
+  reconcile_log   JSONB DEFAULT '{}'::jsonb,    -- {tagged: n, dateFixed: n, newRows: n, conflicts: [...]}
+  UNIQUE (phone, card, period_start, period_end)
+);
+
+CREATE INDEX idx_cc_statements_phone ON cc_statements (phone);
+CREATE INDEX idx_cc_statements_phone_card ON cc_statements (phone, card);
+
+-- For existing deployments:
+--   (Run schema-cc-statements.sql or paste the CREATE TABLE above)
 
 -- ─── Budgets Table ─────────────────────────────────────────────────
 CREATE TABLE budgets (
