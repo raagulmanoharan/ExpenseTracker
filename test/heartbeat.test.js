@@ -50,8 +50,8 @@ describe('Heartbeat Engine', () => {
   });
 
   describe('NUDGE_CHECKS registry', () => {
-    test('has 9 check definitions', () => {
-      expect(NUDGE_CHECKS).toHaveLength(9);
+    test('has 10 check definitions', () => {
+      expect(NUDGE_CHECKS).toHaveLength(10);
     });
 
     test('each check has required fields', () => {
@@ -242,16 +242,19 @@ describe('Heartbeat Engine', () => {
   });
 
   describe('Template metadata', () => {
-    test('each check has template config with sidKey and buildVariables', () => {
+    test('each check with a template config has sidKey and buildVariables', () => {
+      // Some nudges (e.g. playbook_digest) deliver freeform-only and skip
+      // the outside-24h template path; they don't carry a `template` block.
       for (const check of NUDGE_CHECKS) {
-        expect(check.template).toBeDefined();
+        if (!check.template) continue;
         expect(check.template.sidKey).toBeDefined();
         expect(typeof check.template.buildVariables).toBe('function');
       }
     });
 
-    test('TEMPLATE_SIDS has entry for each nudge sidKey', () => {
+    test('TEMPLATE_SIDS has entry for each nudge that declares a sidKey', () => {
       for (const check of NUDGE_CHECKS) {
+        if (!check.template) continue;
         expect(TEMPLATE_SIDS).toHaveProperty(check.template.sidKey);
       }
     });
