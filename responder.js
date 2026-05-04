@@ -267,6 +267,38 @@ Features:
 
 Format as a clean, scannable list for WhatsApp.`;
 
+    case 'rewards_report':
+      return `${nameCtx}Compose a credit-card rewards report for this cycle.
+
+Cycle: ${ctx.cycleLabel}
+Tagged transactions: ${ctx.taggedTxnCount} · Untagged: ${ctx.untaggedTxnCount}
+
+Per-card breakdown (sorted by spend):
+${(ctx.cards || []).map(c => `  ${c.card}: spent ₹${Math.round(c.totalSpend).toLocaleString('en-IN')} across ${c.txnCount} txns → earned ~₹${c.actualValue} (${c.effectiveRatePct}%) · optimal would have been ~₹${c.theoreticalValue} (${c.optimalRatePct}%) · gap ₹${c.gap}`).join('\n')}
+
+Totals: spent ₹${Math.round(ctx.totals?.totalSpend || 0).toLocaleString('en-IN')} · earned ~₹${ctx.totals?.actualValue} · optimal ~₹${ctx.totals?.theoreticalValue} · gap ₹${ctx.totals?.gap}
+
+Format as a clean WhatsApp-readable summary. Use 💳 emoji per card. Lead with the headline (total earned vs optimal). If gap is small (<₹100) say "you're optimizing well". If untagged count is high, mention that those txns weren't analysed.`;
+
+    case 'missing_rewards':
+      return `${nameCtx}Show the user where they used the wrong card this cycle.
+
+Cycle: ${ctx.cycleLabel}
+Total missed value: ₹${ctx.totalMissedInr || 0} across ${ctx.consideredTxnCount} considered txns.
+Top misses:
+${(ctx.top || []).map(t => `  ${t.date} · ₹${Math.round(t.amount).toLocaleString('en-IN')} ${t.merchant || ''} (${t.category}): used ${t.usedCard}, should have used ${t.shouldHaveUsed} → missed ~₹${t.missedInr}${t.bestRuleNote ? ' [' + t.bestRuleNote.slice(0, 80) + ']' : ''}`).join('\n')}
+
+Format as a punchy WhatsApp message. If top is empty, say "you're optimizing perfectly this cycle". Otherwise lead with the total missed, then a numbered list of the top 3-5. Keep it short.`;
+
+    case 'milestone_progress':
+      return `${nameCtx}Show the user's progress toward each card's annual milestone tiers.
+
+YTD window: ${ctx.windowStart} → ${ctx.windowEnd}
+
+${(ctx.cards || []).map(c => `${c.card} — spent ₹${Math.round(c.ytdSpend).toLocaleString('en-IN')} YTD\n${(c.tiers || []).map(t => `  ${t.hit ? '✅' : '⏳'} ₹${Math.round(t.threshold).toLocaleString('en-IN')} → ${t.reward} (${t.progressPct}%${t.hit ? '' : ', ₹' + Math.round(t.remainingInr).toLocaleString('en-IN') + ' to go'})`).join('\n')}`).join('\n\n') || '(no milestone-eligible cards owned)'}
+
+Format as a clean per-card WhatsApp summary. If no milestones, say "none of your cards have spend-based milestone bonuses". For partial progress, highlight the closest unmet tier.`;
+
     case 'error':
       return `Something went wrong processing the user's message. Apologize briefly and ask them to try again. 1 line.`;
 
@@ -407,6 +439,51 @@ function getFallback(actionType, ctx) {
         '• create household — start a family group\n' +
         '• join <code> — join existing\n' +
         '• my household — see members & settings';
+
+    case 'rewards_report': {
+      if (!ctx.cards || ctx.cards.length === 0) {
+        return '💳 *Rewards report — ' + (ctx.cycleLabel || 'this cycle') + '*\n\nNo card-tagged transactions yet. Import a CC statement to enable this.';
+      }
+      const cardLines = ctx.cards.map(c =>
+        '💳 *' + c.card + '*: spent ₹' + Math.round(c.totalSpend).toLocaleString('en-IN') +
+        ' → earned ~₹' + c.actualValue + ' (' + c.effectiveRatePct + '%) · optimal ~₹' + c.theoreticalValue +
+        (c.gap > 0 ? ' · gap ₹' + c.gap : '')
+      ).join('\n');
+      return '*Rewards report — ' + (ctx.cycleLabel || 'this cycle') + '*\n' +
+        ctx.taggedTxnCount + ' tagged · ' + ctx.untaggedTxnCount + ' untagged\n\n' +
+        cardLines + '\n\n' +
+        '📊 *Total*: earned ~₹' + ctx.totals.actualValue + ' / optimal ~₹' + ctx.totals.theoreticalValue +
+        (ctx.totals.gap > 0 ? ' (gap ₹' + ctx.totals.gap + ')' : '');
+    }
+
+    case 'missing_rewards': {
+      if (!ctx.top || ctx.top.length === 0) {
+        return '🏆 *' + (ctx.cycleLabel || 'this cycle') + '* — no significant misses. You\'re using the right cards!';
+      }
+      const lines = ctx.top.map((t, i) =>
+        (i + 1) + '. ' + t.date + ' · ₹' + Math.round(t.amount).toLocaleString('en-IN') +
+        ' ' + (t.merchant || t.category) +
+        '\n    used *' + t.usedCard + '* → should\'ve used *' + t.shouldHaveUsed + '* (~₹' + t.missedInr + ' more)'
+      ).join('\n\n');
+      return '⚠️ *Missed rewards — ' + (ctx.cycleLabel || 'this cycle') + '*\n' +
+        'Total missed: ~₹' + ctx.totalMissedInr + ' across ' + ctx.consideredTxnCount + ' txns\n\n' +
+        lines;
+    }
+
+    case 'milestone_progress': {
+      if (!ctx.cards || ctx.cards.length === 0) {
+        return '🎯 No milestone-eligible cards owned yet, or no tagged spend in the past 365 days.';
+      }
+      const cardBlocks = ctx.cards.map(c => {
+        const tiers = c.tiers.map(t =>
+          (t.hit ? '✅' : '⏳') + ' ₹' + Math.round(t.threshold).toLocaleString('en-IN') +
+          ' → ' + t.reward + ' (' + t.progressPct + '%' +
+          (t.hit ? ')' : ', ₹' + Math.round(t.remainingInr).toLocaleString('en-IN') + ' to go)')
+        ).join('\n');
+        return '💳 *' + c.card + '* — ₹' + Math.round(c.ytdSpend).toLocaleString('en-IN') + ' YTD\n' + tiers;
+      }).join('\n\n');
+      return '🎯 *Milestone progress* (' + (ctx.windowStart || '') + ' → ' + (ctx.windowEnd || '') + ')\n\n' + cardBlocks;
+    }
 
     case 'error':
       return '⚠️ Something went wrong. Try again!';

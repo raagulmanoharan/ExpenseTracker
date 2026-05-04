@@ -40,6 +40,17 @@ Statement date update ("statement HSBC 5", "HSBC statement 5th", "axis statement
 Purchase timing query ("when should I buy", "best time for a big purchase", "which card for X"):
 {"type":"purchase_timing"}
 
+Card-rewards analytics intents (only when user has tagged-card data — engine still tries):
+
+Rewards report ("rewards report", "points earned", "cashback this cycle", "rewards summary", "how much did I earn", "card rewards", "how much points/cashback"):
+{"type":"rewards_report"}
+
+Missing rewards ("missing rewards", "wrong card", "what did I miss", "where did I lose points", "show me missed rewards", "could've earned more"):
+{"type":"missing_rewards"}
+
+Milestone progress ("milestone", "milestone progress", "voucher progress", "spend target", "how close to milestone", "Taj voucher progress"):
+{"type":"milestone_progress"}
+
 HOUSEHOLD INTENTS:
 
 Create a household ("create household", "create a household", "I want to add household", "make me a family group", "set up household tracking"):

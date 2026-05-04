@@ -11,6 +11,7 @@ const {
   getMonthlySummary, getWeeklySummary, getOverspendAlerts, getMonthlySpendByCard,
   listExpensesInRange, updateExpense, insertExpense,
   insertCcStatement, updateCcStatement,
+  getSalaryCycleBounds,
   getBudgets, suggestBudgets, getBudgetStatus,
   checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteExpenseById, getExpenseById, bulkRecategorize,
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount,
@@ -27,6 +28,12 @@ const { handleConversation } = require('./conversation');
 const { composeResponse } = require('./responder');
 const { searchNarratives } = require('./insights');
 const { suggestForExpense: suggestCardStrategy, extractCardHint } = require('./card-strategy');
+const { getRewardsReport, getMissingRewards, getMilestoneProgress } = require('./analytics');
+
+function fmtCycle(start, end) {
+  const fmt = d => d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+  return fmt(start) + ' – ' + fmt(end);
+}
 
 const app = express();
 app.use(express.urlencoded({ extended: false, verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
@@ -947,6 +954,47 @@ async function handleExpenseResult(result, raw, from, user) {
     return await composeResponse('purchase_timing', {
       advice: lines, bestCard: best.card, bestDays: best.interestFreeDays
     }, user);
+
+  // ─── Card-rewards analytics ──────────────────────────────────────────────
+  } else if (result.type === 'rewards_report') {
+    const u = await getUser(from);
+    const userConfig = u && u.salaryType ? { salaryType: u.salaryType, salaryDay: u.salaryDay } : null;
+    const { cycleStart, cycleEnd } = getSalaryCycleBounds(new Date(), userConfig);
+    const startStr = cycleStart.toISOString().split('T')[0];
+    const endStr = cycleEnd.toISOString().split('T')[0];
+    const report = await getRewardsReport(from, {
+      cycleStart: startStr, cycleEnd: endStr,
+      db: { listExpensesInRange, getUser },
+      user: u
+    });
+    return await composeResponse('rewards_report', {
+      cycleLabel: fmtCycle(cycleStart, cycleEnd),
+      ...report
+    }, user);
+
+  } else if (result.type === 'missing_rewards') {
+    const u = await getUser(from);
+    const userConfig = u && u.salaryType ? { salaryType: u.salaryType, salaryDay: u.salaryDay } : null;
+    const { cycleStart, cycleEnd } = getSalaryCycleBounds(new Date(), userConfig);
+    const startStr = cycleStart.toISOString().split('T')[0];
+    const endStr = cycleEnd.toISOString().split('T')[0];
+    const missing = await getMissingRewards(from, {
+      cycleStart: startStr, cycleEnd: endStr, limit: 5,
+      db: { listExpensesInRange, getUser },
+      user: u
+    });
+    return await composeResponse('missing_rewards', {
+      cycleLabel: fmtCycle(cycleStart, cycleEnd),
+      ...missing
+    }, user);
+
+  } else if (result.type === 'milestone_progress') {
+    const u = await getUser(from);
+    const progress = await getMilestoneProgress(from, {
+      db: { listExpensesInRange, getUser },
+      user: u
+    });
+    return await composeResponse('milestone_progress', progress, user);
 
   // ─── Household intents ───────────────────────────────────────────────────
   } else if (result.type === 'create_household') {
