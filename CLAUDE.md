@@ -36,6 +36,7 @@ No multi-turn state machines for settings. If the user wants to set salary, they
 | `card-strategies.json` | Per-card knowledge base: aliases, base earn, category multipliers, voucher tricks, milestones, exclusions, transfer partners. Each trick cited (TechnoFino, CardExpert, LiveFromALounge, Reddit). Update this file (not the engine) when issuers devalue or new tricks emerge. |
 | `cc-statement-parser.js` | **CC statement parser** — Claude-vision PDF parser specifically for credit-card statements. Returns `{card, cardUserKey, periodStart/End, totalSpend, transactions[]}`. Identifies which card by reading the statement header and matching against the user's `statementDates` keys + KB aliases. |
 | `cc-statement-reconciler.js` | **CC statement reconciler** — pure logic that maps a parsed statement onto existing expenses. Auto-merges by amount (±₹1) + date (±2 days), flags true conflicts (same amount/date already tagged with a different card). Inserts the `cc_statements` row first so reconciled expenses get an FK. Tested with mock DB — no live calls. |
+| `analytics.js` | **Card-rewards analytics**. `getRewardsReport()` per-card actual vs theoretical rewards earned this cycle. `getMissingRewards()` top transactions where the wrong card was used + INR missed. `getMilestoneProgress()` YTD spend vs each card's milestone tiers (Plat Travel 1.9L/4L/7L, Atlas Silver/Gold/Platinum). Walks each cycle in date order, tracks per-card MTD for cap-aware scoring. Tie-breaks ties on INR value by preferring non-portal-routed rules (cashback over RM portal). |
 | `constants.js` | Shared: CATEGORIES, BASE_CATEGORIES, `getVisibleCategories()`, `isCommitted()`, `isSharedCategory()`, `parseIndianDate()`, `safeParseJSON()`, `getCategoryEmoji()`. |
 
 ### Heartbeat nudge system
@@ -79,6 +80,19 @@ Source-of-truth import path: drop CC statement PDFs **or XLSX files** into `./St
 - **Card detection**: parser reads the statement header and matches against the user's `statementDates` keys + KB aliases. If no match, the user gets prompted to register the card first (`statement <name> <day>`) before re-sending.
 - **`Statements/` folder**: local-only workspace. PDFs are in `.gitignore` so they never get committed. Useful for batch-backfilling many old statements at once.
 - **Tests**: `test/cc-reconciler.test.js` covers decision logic with mock DB (insert / update / conflict / refund / dry-run / idempotent-rerun). No API key needed.
+
+### Card-rewards analytics
+Three WhatsApp commands surface the personalization layer, all backed by `analytics.js`. They depend on `expenses.card` being populated — i.e. you've imported at least one CC statement (or tagged via `extractCardHint`).
+
+- **`rewards report`** — per-card actual vs theoretical rewards this cycle. Effective return %, gap. Uses cap-aware scoring with per-card MTD tracked across the cycle (date-ordered walk).
+- **`missing rewards`** — top 5 transactions where you used the wrong card. Each shows: what you used, what was optimal, and how much INR you missed. Aggregated total at the top.
+- **`milestone progress`** — YTD spend per card vs each milestone tier (Plat Travel 1.9L/4L/7L, Atlas Silver/Gold/Platinum). Shows percent-to-tier and ₹ remaining.
+
+Engine details:
+- All three pull from `expenses` where `card IS NOT NULL`. Untagged rows are excluded — the engine doesn't know which card was used.
+- Cycle defaults to the user's salary cycle (or calendar month). Milestone window is the trailing 365 days.
+- Tie-break on equal INR value: prefer non-portal-routed rules (e.g. ICICI Amazon's 5% direct cashback over Amex Plat Travel's 5x via Reward Multiplier portal — same value, less friction).
+- Tests: `test/analytics.test.js` (mock DB, real KB) covers walkCycle, per-card aggregation, missing-reward routing, milestone progress.
 
 ### Household system
 Two or more users can form a household via share codes. Each user messages Budgy 1:1, but summaries and nudges reflect combined household spending for shared categories.
@@ -125,6 +139,7 @@ Run: `npm test` (jest --forceExit). Tests across 5 suites.
 - `test/household.test.js` — household helpers (isSharedCategory, generateHouseholdId)
 - `test/card-strategy.test.js` — card rewards engine (alias matching, multiplier routing, noise control, grey-area gating, real-KB smoke)
 - `test/cc-reconciler.test.js` — CC statement reconciler (insert/update/conflict decisions, date-fix, dry-run, idempotency)
+- `test/analytics.test.js` — card-rewards analytics (walkCycle, per-card aggregation, missing-reward routing, milestone progress, real-KB)
 
 ### Git repo
 https://github.com/raagulmanoharan/ExpenseTracker
