@@ -20,7 +20,8 @@ const {
   getHouseholdRows, getHouseholdMembers, createHousehold, joinHousehold, leaveHousehold, updateSharedCategories,
   getHouseholdSharedCategories, syncHouseholdSalary,
   getRecentExpensesWithIds, getHouseholdExpensesWithIds, getExpensesForExport,
-  getSpendingContext
+  getSpendingContext,
+  shouldAskHint, buildHintUpdate
 } = require('./db');
 const { scheduleHeartbeat, buildWeeklyDigest } = require('./scheduler');
 const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppInteractive, sendHouseholdNotification } = require('./messaging');
@@ -48,7 +49,7 @@ const pendingOnboarding = new Map(); // new users being onboarded
 const pendingHouseholdSetup = new Map(); // awaiting shared category selection
 const pendingSharedCategoryReset = new Map(); // awaiting full shared category reset
 const pendingSetup = new Map();    // progressive CC/salary setup: { stage, askedAt }
-const setupHintsSent = new Map();  // phone → Set('cc', 'salary') — tracks what's been asked
+// (setupHintsSent moved to users.setup_hints_sent — survives restarts; see utils.shouldAskHint)
 const pendingDelete = new Map();   // phone → { expenseId, details, askedAt } — awaiting yes/no confirmation
 const PENDING_DELETE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const pendingDuplicateConfirm = new Map(); // phone → { newExpense, existingMatch, askedAt }
@@ -362,20 +363,18 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
           // Check if they included card details in the same message
           const parsed = parseStatementInput(incomingMsg);
           if (parsed && !parsed._single && Object.keys(parsed).length > 0) {
-            // They gave details — save them
+            // They gave details — save statement dates + mark cc 'sent' (+ salary 'sent' if next-asking).
             const userForStmt = await getUser(from);
             const dates = Object.assign({}, (userForStmt && userForStmt.statementDates) || {}, parsed);
-            await updateUser(from, { statementDates: dates });
+            const askingSalary = !userForStmt || !userForStmt.salaryType;
+            let newHints = buildHintUpdate(userForStmt, 'cc', 'sent');
+            if (askingSalary) newHints = buildHintUpdate({ ...userForStmt, setupHintsSent: newHints }, 'salary', 'sent');
+            await updateUser(from, { statementDates: dates, setupHintsSent: newHints });
             pendingSetup.delete(from);
             const summary = Object.entries(dates).map(e => e[0] + ': ' + e[1] + 'th').join(', ');
-            const hints = setupHintsSent.get(from) || new Set();
-            hints.add('cc');
-            setupHintsSent.set(from, hints);
-            // Ask about salary next if not set
-            if (!userForStmt || !userForStmt.salaryType) {
+            if (askingSalary) {
               const reply = await composeResponse('setup_salary_ask', { statementConfirmation: 'Saved! Statement dates — ' + summary + '.' }, user);
               pendingSetup.set(from, { stage: 'salary_asked', askedAt: new Date() });
-              hints.add('salary');
               twiml.message(reply);
               return sendResponse();
             }
@@ -389,24 +388,23 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
           return sendResponse();
         } else if (isNo) {
           pendingSetup.delete(from);
-          const hints = setupHintsSent.get(from) || new Set();
-          hints.add('cc');
-          setupHintsSent.set(from, hints);
-          // Ask about salary if not set
-          if (!user.salaryType) {
+          const askingSalary = !user.salaryType;
+          let newHints = buildHintUpdate(user, 'cc', 'sent');
+          if (askingSalary) newHints = buildHintUpdate({ ...user, setupHintsSent: newHints }, 'salary', 'sent');
+          await updateUser(from, { setupHintsSent: newHints });
+          if (askingSalary) {
             pendingSetup.set(from, { stage: 'salary_asked', askedAt: new Date() });
-            hints.add('salary');
             const reply = await composeResponse('setup_cc_skipped', {}, user);
             twiml.message(reply);
             return sendResponse();
           }
-          // Both done
-          pendingSetup.delete(from);
-          // Fall through to normal processing
+          // Both done — fall through to normal processing
         }
         if (isLater) {
           pendingSetup.delete(from);
-          // Don't mark hint as sent — will ask again later
+          // Mark cc as 'later' so the 7-day cooldown kicks in instead of re-firing
+          // on the next expense (the previous behavior was a UX nag — see #14).
+          await updateUser(from, { setupHintsSent: buildHintUpdate(user, 'cc', 'later') });
         }
         // Neither yes nor no nor later — clear state, process normally
         if (pendingSetup.has(from) && pendingSetup.get(from).stage === 'cc_asked') pendingSetup.delete(from);
@@ -446,15 +444,14 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
         if (parsed && Object.keys(parsed).filter(k => k !== '_single').length > 0) {
           const userForStmt = await getUser(from);
           const dates = Object.assign({}, (userForStmt && userForStmt.statementDates) || {}, parsed);
-          await updateUser(from, { statementDates: dates });
+          const askingSalary = !userForStmt || !userForStmt.salaryType;
+          let newHints = buildHintUpdate(userForStmt, 'cc', 'sent');
+          if (askingSalary) newHints = buildHintUpdate({ ...userForStmt, setupHintsSent: newHints }, 'salary', 'sent');
+          await updateUser(from, { statementDates: dates, setupHintsSent: newHints });
           pendingSetup.delete(from);
           const summary = Object.entries(dates).map(e => e[0] + ': ' + e[1] + 'th').join(', ');
-          const hints = setupHintsSent.get(from) || new Set();
-          hints.add('cc');
-          setupHintsSent.set(from, hints);
-          if (!userForStmt || !userForStmt.salaryType) {
+          if (askingSalary) {
             pendingSetup.set(from, { stage: 'salary_asked', askedAt: new Date() });
-            hints.add('salary');
             const reply = await composeResponse('setup_salary_ask', { statementConfirmation: 'Saved! Statement dates — ' + summary + '.' }, user);
             twiml.message(reply);
             return sendResponse();
@@ -566,23 +563,44 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     const isXlsx = mediaType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                 || mediaType === 'application/vnd.ms-excel';
     if (numMedia > 0 && (isPdf || isXlsx)) {
-      // CC statement vs bank statement: user signals via the caption.
-      // XLSX uploads are CC statements only — the existing bank parser is PDF-only.
-      const isCcStatement = isXlsx || /\b(cc|credit[-\s]*card|card)\s*statement\b/i.test(incomingMsg || '');
-      if (isCcStatement) {
+      // Routing rules:
+      //   1. Caption mentions "bank statement" / "savings" → bank parser
+      //   2. Caption mentions "cc" / "credit card" / "card statement" → CC parser
+      //   3. XLSX → always CC parser (bank parser is PDF-only)
+      //   4. PDF without caption → try CC parser first; auto-fall-back to bank parser
+      //      if the CC parser can't identify the card AND finds many transactions.
+      const captionBank = /\b(bank|savings|current\s*account)\s*statement\b/i.test(incomingMsg || '');
+      const captionCc = /\b(cc|credit[-\s]*card|card)\s*statement\b/i.test(incomingMsg || '');
+      const route = captionBank ? 'bank' : (captionCc || isXlsx ? 'cc' : 'auto');
+
+      if (route === 'cc') {
         twiml.message("💳 Reading your credit-card statement — give me ~30 seconds...");
         sendResponse();
         processCcStatementAsync(from, mediaUrl, mediaType, user).catch(err => {
-          console.error('CC statement error:', err);
-          sendWhatsAppTo(from, "⚠️ Couldn't reconcile that CC statement: " + (err.message || 'unknown error'));
+          const errType = classifyError(err);
+          console.error('[cc-statement] (' + errType + ')', err.message || err);
+          sendWhatsAppTo(from, fallbackErrorMessage(errType));
         });
         return;
       }
-      twiml.message("📄 Got your statement! Analysing — give me a few seconds...");
+      if (route === 'bank') {
+        twiml.message("📄 Got your statement! Analysing — give me a few seconds...");
+        sendResponse();
+        processPDFAsync(from, mediaUrl, user).catch(err => {
+          const errType = classifyError(err);
+          console.error('[pdf] (' + errType + ')', err.message || err);
+          sendWhatsAppTo(from, fallbackErrorMessage(errType));
+        });
+        return;
+      }
+
+      // Auto-detect: try CC parser first, fall back to bank parser if no card identified.
+      twiml.message("📄 Got your statement! Detecting type and analysing — ~30 seconds...");
       sendResponse();
-      processPDFAsync(from, mediaUrl, user).catch(err => {
-        console.error('PDF error:', err);
-        sendWhatsAppTo(from, "⚠️ Couldn't read that PDF. Try a different format.");
+      processStatementAutoAsync(from, mediaUrl, mediaType, user).catch(err => {
+        const errType = classifyError(err);
+        console.error('[statement-auto] (' + errType + ')', err.message || err);
+        sendWhatsAppTo(from, fallbackErrorMessage(errType));
       });
       return;
     }
@@ -640,13 +658,43 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
     if (reply) twiml.message(reply);
 
   } catch (err) {
-    console.error('Webhook error:', err);
-    const errReply = await composeResponse('error', {}, user).catch(() => '⚠️ Something went wrong. Try again!');
+    const errType = classifyError(err);
+    console.error('[webhook] (' + errType + ')', err.message || err);
+    const errReply = await composeResponse('error', { type: errType }, user)
+      .catch(() => fallbackErrorMessage(errType));
     twiml.message(errReply);
   }
 
   sendResponse();
 });
+
+// Classify the error so we can surface a useful message to the user instead
+// of a generic "something went wrong". Five buckets: transient, ai_parser,
+// media, persistence, unknown. See responder.js error case for the matched copy.
+function classifyError(err) {
+  if (!err) return 'unknown';
+  const code = err.code || err.errno || '';
+  const status = err.status || err.statusCode || 0;
+  if (code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'ETIMEDOUT') return 'transient';
+  if (status === 503 || status === 504 || status === 529) return 'transient';
+  const msg = String(err.message || '').toLowerCase();
+  if (msg.includes('anthropic') || msg.includes('claude') || msg.includes('json parse') || msg.includes('safejson')) return 'ai_parser';
+  if (msg.includes('media') || msg.includes('image') || msg.includes('document') || msg.includes('pdf')) return 'media';
+  if (msg.includes('supabase') || msg.includes('postgres') || msg.includes('database')
+      || msg.includes('insert failed') || msg.includes('update failed') || msg.includes('select failed')
+      || msg.includes('append') || msg.includes('row')) return 'persistence';
+  return 'unknown';
+}
+
+function fallbackErrorMessage(errType) {
+  switch (errType) {
+    case 'transient':   return '🌐 Brief blip — try again in a few seconds.';
+    case 'ai_parser':   return "🤔 Couldn't quite read that. Try something like \"lunch 280 Swiggy\".";
+    case 'media':       return "📎 Couldn't read that file — try a clearer photo or a different PDF.";
+    case 'persistence': return '💾 Saving is having trouble right now — try again in a minute.';
+    default:            return '⚠️ Something went wrong. Try again!';
+  }
+}
 
 // ─── CC statement async ──────────────────────────────────────────────────────
 const ccReconcilerDb = {
@@ -657,15 +705,35 @@ const ccReconcilerDb = {
   updateCcStatement
 };
 
-async function processCcStatementAsync(from, mediaUrl, mediaType, user) {
-  const parsed = await parseCcStatement({ mediaUrl, mediaType }, user);
-  if (!parsed.cardUserKey) {
+// Auto-detect bank vs CC for an unlabeled PDF. Try the CC parser first because
+// (a) most user-uploaded statement PDFs are CC, and (b) the CC parser identifies
+// the card from the header — if it can't, we know it's likely a bank statement
+// and fall through to the bank parser (one extra Sonnet call only on bank
+// statements, which are rarer than CC). XLSX never reaches here (always CC).
+async function processStatementAutoAsync(from, mediaUrl, mediaType, user) {
+  const parsed = await parseCcStatement({ mediaUrl, mediaType }, user).catch(err => {
+    console.warn('[statement-auto] CC parse failed, will try bank:', err.message);
+    return null;
+  });
+  if (parsed && parsed.cardUserKey) {
+    return finishCcReconcile(from, parsed, mediaUrl);
+  }
+  // CC parser couldn't identify the card. If it returned transactions, it might
+  // still be a CC for an unregistered card — guide the user. Otherwise fall
+  // through to the bank parser.
+  if (parsed && (parsed.transactions || []).length >= 5 && parsed.card) {
     await sendWhatsAppTo(from,
-      `📄 Statement parsed, but I couldn't auto-detect which of your registered cards this is for ` +
-      `(saw "${parsed.card || 'unknown'}").\n\nRegister the card first via:\n  *statement <card name> <day>*\nthen re-send the PDF with caption "*cc statement*".`
+      `📄 Looks like a ${parsed.card} credit-card statement, but you haven't registered that card yet.\n\n` +
+      `Register it first via:\n  *statement <card name> <day>*\nthen re-send the PDF with caption "*cc statement*".`
     );
     return;
   }
+  await processPDFAsync(from, mediaUrl, user);
+}
+
+// Extracted: send CC reconciliation summary. Used by both processCcStatementAsync
+// (explicit-route path) and processStatementAutoAsync (auto-detected CC).
+async function finishCcReconcile(from, parsed, mediaUrl) {
   const result = await reconcileCcStatement(parsed, from, ccReconcilerDb, {
     source: 'whatsapp',
     sourcePath: mediaUrl
@@ -682,6 +750,18 @@ async function processCcStatementAsync(from, mediaUrl, mediaType, user) {
     s.conflicts > 0 ? `⚠️ ${s.conflicts} conflicts — check Supabase cc_statements.reconcile_log` : null
   ].filter(Boolean).join('\n');
   await sendWhatsAppTo(from, lines);
+}
+
+async function processCcStatementAsync(from, mediaUrl, mediaType, user) {
+  const parsed = await parseCcStatement({ mediaUrl, mediaType }, user);
+  if (!parsed.cardUserKey) {
+    await sendWhatsAppTo(from,
+      `📄 Statement parsed, but I couldn't auto-detect which of your registered cards this is for ` +
+      `(saw "${parsed.card || 'unknown'}").\n\nRegister the card first via:\n  *statement <card name> <day>*\nthen re-send the PDF with caption "*cc statement*".`
+    );
+    return;
+  }
+  await finishCcReconcile(from, parsed, mediaUrl);
 }
 
 // ─── PDF async ────────────────────────────────────────────────────────────────
@@ -801,29 +881,26 @@ async function handleExpenseResult(result, raw, from, user) {
       }
     }
 
-    // Check if we should trigger progressive setup
+    // Check if we should trigger progressive setup. Hints are persisted on the
+    // user row; `shouldAskHint` honors 'sent' (never re-ask) vs 'later' (cooldown).
     const freshUser = await getUser(from);
     const expCount = freshUser ? (freshUser.expenseCount || 0) : 0;
-    const hints = setupHintsSent.get(from) || new Set();
     const hasCC = freshUser && freshUser.statementDates && Object.keys(freshUser.statementDates).length > 0;
     const hasSalary = freshUser && freshUser.salaryType;
 
-    // After 3rd expense, ask about CC (if not set and not asked before)
-    if (expCount >= 3 && !hasCC && !hints.has('cc') && !pendingSetup.has(from)) {
-      hints.add('cc');
-      setupHintsSent.set(from, hints);
+    // After 3rd expense, ask about CC (if not set and not asked-recently)
+    if (expCount >= 3 && !hasCC && shouldAskHint(freshUser, 'cc') && !pendingSetup.has(from)) {
+      await updateUser(from, { setupHintsSent: buildHintUpdate(freshUser, 'cc', 'sent') });
       pendingSetup.set(from, { stage: 'cc_asked', askedAt: new Date() });
       const expConf = getCategoryEmoji(category) + ' ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '') + '\n' + (monthly.cycleLabel || 'This month') + ': ₹' + monthly.total;
       const fallback = await composeResponse('setup_cc_ask', { expenseConfirmation: expConf }, user);
-      // Send interactive buttons — response goes async, return null to signal "already handled"
       sendWhatsAppInteractive(from, 'cc_setup_ask', { '1': expConf }, fallback).catch(() => {});
       return null;
     }
 
-    // After CC setup or 5th expense, ask about salary (if not set and not asked before)
-    if (!hasSalary && !hints.has('salary') && !pendingSetup.has(from) && (hasCC || expCount >= 5)) {
-      hints.add('salary');
-      setupHintsSent.set(from, hints);
+    // After CC setup or 5th expense, ask about salary (if not set and not asked-recently)
+    if (!hasSalary && shouldAskHint(freshUser, 'salary') && !pendingSetup.has(from) && (hasCC || expCount >= 5)) {
+      await updateUser(from, { setupHintsSent: buildHintUpdate(freshUser, 'salary', 'sent') });
       pendingSetup.set(from, { stage: 'salary_asked', askedAt: new Date() });
       const expConf = getCategoryEmoji(category) + ' ₹' + Number(amount).toLocaleString('en-IN') + ' — ' + category + (merchant ? ' · ' + merchant : '') + '\n' + (monthly.cycleLabel || 'This month') + ': ₹' + monthly.total;
       const fallback = await composeResponse('setup_salary_ask_standalone', { expenseConfirmation: expConf }, user);

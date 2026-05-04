@@ -4,7 +4,7 @@
 const {
   parseSalaryInput, parseStatementInput, getDaysUntilStatement,
   getBillingCycleAdvice, getSalaryCycleBounds, computeUserCycleBounds,
-  isWithinSessionWindow
+  isWithinSessionWindow, shouldAskHint, buildHintUpdate
 } = require('../utils');
 
 describe('parseSalaryInput', () => {
@@ -216,5 +216,71 @@ describe('isWithinSessionWindow', () => {
 
   test('returns false when lastMessageAt is empty string', () => {
     expect(isWithinSessionWindow({ lastMessageAt: '' })).toBe(false);
+  });
+});
+
+describe('shouldAskHint', () => {
+  test('returns true when user has no setupHintsSent', () => {
+    expect(shouldAskHint({}, 'cc')).toBe(true);
+    expect(shouldAskHint(null, 'cc')).toBe(true);
+    expect(shouldAskHint({ setupHintsSent: {} }, 'cc')).toBe(true);
+  });
+
+  test('returns false when state is sent (permanent)', () => {
+    const user = { setupHintsSent: { cc: { state: 'sent', askedAt: new Date().toISOString() } } };
+    expect(shouldAskHint(user, 'cc')).toBe(false);
+  });
+
+  test('returns false when state is sent regardless of age', () => {
+    const oneYearAgo = new Date(Date.now() - 365 * 86400000).toISOString();
+    const user = { setupHintsSent: { cc: { state: 'sent', askedAt: oneYearAgo } } };
+    expect(shouldAskHint(user, 'cc')).toBe(false);
+  });
+
+  test('returns false within cooldown for state=later', () => {
+    const oneDayAgo = new Date(Date.now() - 86400000).toISOString();
+    const user = { setupHintsSent: { cc: { state: 'later', askedAt: oneDayAgo } } };
+    expect(shouldAskHint(user, 'cc')).toBe(false); // default 7d cooldown
+  });
+
+  test('returns true after cooldown for state=later', () => {
+    const eightDaysAgo = new Date(Date.now() - 8 * 86400000).toISOString();
+    const user = { setupHintsSent: { cc: { state: 'later', askedAt: eightDaysAgo } } };
+    expect(shouldAskHint(user, 'cc')).toBe(true);
+  });
+
+  test('honors a custom cooldown', () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 86400000).toISOString();
+    const user = { setupHintsSent: { cc: { state: 'later', askedAt: twoDaysAgo } } };
+    expect(shouldAskHint(user, 'cc', 1)).toBe(true);    // 1d cooldown — past
+    expect(shouldAskHint(user, 'cc', 30)).toBe(false);  // 30d cooldown — not past
+  });
+
+  test('does not confuse different hint kinds', () => {
+    const user = { setupHintsSent: { cc: { state: 'sent', askedAt: new Date().toISOString() } } };
+    expect(shouldAskHint(user, 'cc')).toBe(false);
+    expect(shouldAskHint(user, 'salary')).toBe(true);
+  });
+});
+
+describe('buildHintUpdate', () => {
+  test('creates a fresh hints map when user has none', () => {
+    const out = buildHintUpdate({}, 'cc', 'sent');
+    expect(out.cc.state).toBe('sent');
+    expect(typeof out.cc.askedAt).toBe('string');
+  });
+
+  test('preserves other hint kinds', () => {
+    const user = { setupHintsSent: { salary: { state: 'sent', askedAt: '2026-01-01T00:00:00.000Z' } } };
+    const out = buildHintUpdate(user, 'cc', 'later');
+    expect(out.salary.state).toBe('sent');
+    expect(out.cc.state).toBe('later');
+  });
+
+  test('overwrites the same kind', () => {
+    const user = { setupHintsSent: { cc: { state: 'later', askedAt: '2026-01-01T00:00:00.000Z' } } };
+    const out = buildHintUpdate(user, 'cc', 'sent');
+    expect(out.cc.state).toBe('sent');
+    expect(out.cc.askedAt).not.toBe('2026-01-01T00:00:00.000Z');
   });
 });

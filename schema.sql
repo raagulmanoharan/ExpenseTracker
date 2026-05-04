@@ -17,12 +17,16 @@ CREATE TABLE users (
   last_message_at TIMESTAMPTZ,
   household_id    TEXT,
   shared_categories JSONB DEFAULT NULL,
+  setup_hints_sent JSONB DEFAULT '{}'::jsonb,    -- { cc: {state, askedAt}, salary: {state, askedAt} } — see utils.shouldAskHint
   created_at      TIMESTAMPTZ DEFAULT NOW(),
   updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_users_phone ON users (phone);
 CREATE INDEX idx_users_household_id ON users (household_id) WHERE household_id IS NOT NULL;
+
+-- For existing deployments, run this migration:
+--   ALTER TABLE users ADD COLUMN IF NOT EXISTS setup_hints_sent JSONB DEFAULT '{}'::jsonb;
 
 -- ─── Expenses Table ────────────────────────────────────────────────
 CREATE TABLE expenses (

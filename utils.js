@@ -181,6 +181,34 @@ function getBillingCycleAdvice(statementDates) {
   return advice;
 }
 
+// ─── Setup-hint persistence ─────────────────────────────────────────────────
+// Tracks whether we've already asked the user about CC / salary setup so we
+// don't nag them on every restart. Two states:
+//   'sent'  — user gave a definitive yes/no; never re-ask
+//   'later' — user tapped "Later"; re-ask after `cooldownDays`
+//
+// Shape stored in users.setup_hints_sent:
+//   { cc: { state: 'sent' | 'later', askedAt: '<iso>' }, salary: { ... } }
+function shouldAskHint(user, kind, cooldownDays) {
+  const days = typeof cooldownDays === 'number' ? cooldownDays : 7;
+  const h = (user && user.setupHintsSent) ? user.setupHintsSent[kind] : null;
+  if (!h) return true;
+  if (h.state === 'sent') return false;
+  if (h.state === 'later' && h.askedAt) {
+    const ageDays = (Date.now() - new Date(h.askedAt).getTime()) / 86400000;
+    return ageDays >= days;
+  }
+  return true; // unknown state shape — re-ask
+}
+
+function buildHintUpdate(user, kind, state) {
+  const current = (user && user.setupHintsSent) ? user.setupHintsSent : {};
+  return {
+    ...current,
+    [kind]: { state, askedAt: new Date().toISOString() }
+  };
+}
+
 // ─── Session window ─────────────────────────────────────────────────────────
 function isWithinSessionWindow(user) {
   if (!user || !user.lastMessageAt) return false;
@@ -291,6 +319,8 @@ module.exports = {
   getBillingCycleAdvice,
   isWithinSessionWindow,
   generateHouseholdId,
+  shouldAskHint,
+  buildHintUpdate,
   computeEwma,
   computeDowFactors,
   projectRemainingCycle
