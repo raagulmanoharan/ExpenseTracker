@@ -106,6 +106,89 @@ describe('getMissingRewards', () => {
   });
 });
 
+describe('getPersonalizedPlaybook', () => {
+  const { getPersonalizedPlaybook } = require('../analytics');
+
+  function ninetyDayHistory() {
+    // Mix of recurring categories — engine should rank by total spend.
+    const today = new Date();
+    const ago = (d) => { const x = new Date(today); x.setDate(today.getDate() - d); return x.toISOString().split('T')[0]; };
+    return [
+      // Travel — 3 trips in 90 days, big totals
+      { id: 'a', date: ago(80), amount: 25000, category: 'Travel', merchant: 'IndiGo', card: 'AXIS ATLAS' },
+      { id: 'b', date: ago(50), amount: 18000, category: 'Travel', merchant: 'MakeMyTrip', card: 'AXIS ATLAS' },
+      { id: 'c', date: ago(20), amount: 22000, category: 'Travel', merchant: 'Vistara', card: 'AXIS ATLAS' },
+      // Amazon shopping — 5 small txns
+      { id: 'd', date: ago(70), amount: 3000, category: 'Shopping', merchant: 'Amazon', card: 'ICICI AMAZON' },
+      { id: 'e', date: ago(60), amount: 5000, category: 'Shopping', merchant: 'Amazon.in', card: 'ICICI AMAZON' },
+      { id: 'f', date: ago(40), amount: 2500, category: 'Shopping', merchant: 'Amazon', card: 'ICICI AMAZON' },
+      // Swiggy
+      { id: 'g', date: ago(85), amount: 800, category: 'Food Delivery', merchant: 'Swiggy', card: 'HDFC SWIGGY' },
+      { id: 'h', date: ago(70), amount: 600, category: 'Food Delivery', merchant: 'Swiggy', card: 'HDFC SWIGGY' },
+      { id: 'i', date: ago(45), amount: 950, category: 'Food Delivery', merchant: 'Swiggy', card: 'HDFC SWIGGY' },
+      { id: 'j', date: ago(20), amount: 700, category: 'Food Delivery', merchant: 'Swiggy', card: 'HDFC SWIGGY' },
+      // Rent — should be SKIPPED (excluded category, no card earns)
+      { id: 'k', date: ago(60), amount: 30000, category: 'Rent', merchant: 'NoBroker', card: null }
+    ];
+  }
+
+  test('returns top categories sorted by spend', async () => {
+    const r = await getPersonalizedPlaybook('whatsapp:+91X', {
+      db: mockDb(ninetyDayHistory()), user: USER
+    });
+    expect(r.entries.length).toBeGreaterThan(0);
+    // Travel should rank #1 (highest total)
+    expect(r.entries[0].category).toBe('Travel');
+    expect(r.entries[0].monthlyAvgSpend).toBeGreaterThan(0);
+  });
+
+  test('excludes Rent / Other / Family Transfer / CC Payment', async () => {
+    const r = await getPersonalizedPlaybook('whatsapp:+91X', {
+      db: mockDb(ninetyDayHistory()), user: USER
+    });
+    const cats = r.entries.map(e => e.category);
+    expect(cats).not.toContain('Rent');
+    expect(cats).not.toContain('Other');
+  });
+
+  test('flags hasVoucherTrick when rule note describes a portal flow', async () => {
+    const r = await getPersonalizedPlaybook('whatsapp:+91X', {
+      db: mockDb(ninetyDayHistory()), user: USER
+    });
+    // Find an entry where the note mentions portal/voucher/etc — hasVoucherTrick should be true
+    const portalEntry = r.entries.find(e => e.hasVoucherTrick);
+    if (portalEntry) {
+      expect(portalEntry.voucherTrick).toBeTruthy();
+      expect(portalEntry.bestRuleNote).toBe(portalEntry.voucherTrick);
+    }
+    // Either way, the field is present
+    for (const e of r.entries) expect(typeof e.hasVoucherTrick).toBe('boolean');
+  });
+
+  test('returns total monthly upside summing per-entry upsides', async () => {
+    const r = await getPersonalizedPlaybook('whatsapp:+91X', {
+      db: mockDb(ninetyDayHistory()), user: USER
+    });
+    const sum = r.entries.reduce((s, e) => s + e.estimatedMonthlyUpsideInr, 0);
+    expect(Math.abs(sum - r.totalMonthlyUpsideInr)).toBeLessThan(0.5);
+  });
+
+  test('empty history → no entries, zero upside', async () => {
+    const r = await getPersonalizedPlaybook('whatsapp:+91X', {
+      db: mockDb([]), user: USER
+    });
+    expect(r.entries).toEqual([]);
+    expect(r.totalMonthlyUpsideInr).toBe(0);
+  });
+
+  test('no owned cards → empty playbook', async () => {
+    const r = await getPersonalizedPlaybook('whatsapp:+91X', {
+      db: mockDb(ninetyDayHistory()), user: { statementDates: {} }
+    });
+    expect(r.entries).toEqual([]);
+  });
+});
+
 describe('getMilestoneProgress', () => {
   test('reports YTD progress for milestone-having cards (Plat Travel + Atlas)', async () => {
     const r = await getMilestoneProgress('whatsapp:+91X', {

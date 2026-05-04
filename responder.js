@@ -290,6 +290,19 @@ ${(ctx.top || []).map(t => `  ${t.date} · ₹${Math.round(t.amount).toLocaleStr
 
 Format as a punchy WhatsApp message. If top is empty, say "you're optimizing perfectly this cycle". Otherwise lead with the total missed, then a numbered list of the top 3-5. Keep it short.`;
 
+    case 'playbook':
+      return `${nameCtx}Compose a personalized credit-card optimization playbook based on the user's actual spending in the last 90 days.
+
+Period: ${ctx.periodStart} → ${ctx.periodEnd}
+Total monthly upside if user follows this playbook: ~₹${ctx.totalMonthlyUpsideInr || 0}
+
+Per-category recommendations (sorted by spend):
+${(ctx.entries || []).map(e =>
+  `${e.category} (~₹${Math.round(e.monthlyAvgSpend).toLocaleString('en-IN')}/month, ${e.txnCount} txns, sample: ${e.sampleMerchants.join(', ') || 'n/a'})\n  → ${e.bestCard} at ${e.bestMultiplier}x → ~₹${e.estimatedMonthlyUpsideInr}/mo${e.hasVoucherTrick ? '\n  ▸ ACTION: ' + e.voucherTrick : ''}`
+).join('\n\n') || '(no actionable recommendations — user may not have any tagged transactions)'}
+
+Format as a personal "playbook" for WhatsApp. Lead with the headline (~₹X/month possible). Then ONE line per category with the optimal flow. When a category has a voucher trick / portal flow, surface it explicitly as an actionable step (e.g. "Load Amazon Pay via Reward Multiplier portal first, then pay from balance"). Keep it scannable. Use 💳 / 🎯 emojis sparingly.`;
+
     case 'milestone_progress':
       return `${nameCtx}Show the user's progress toward each card's annual milestone tiers.
 
@@ -305,6 +318,11 @@ Format as a clean per-card WhatsApp summary. If no milestones, say "none of your
     default:
       return `${nameCtx}Compose a brief, friendly WhatsApp reply for this action: ${actionType}\n\nContext: ${JSON.stringify(ctx)}`;
   }
+}
+
+function truncate(s, n) {
+  s = String(s || '');
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
 function formatCardTipForPrompt(tip) {
@@ -468,6 +486,26 @@ function getFallback(actionType, ctx) {
       return '⚠️ *Missed rewards — ' + (ctx.cycleLabel || 'this cycle') + '*\n' +
         'Total missed: ~₹' + ctx.totalMissedInr + ' across ' + ctx.consideredTxnCount + ' txns\n\n' +
         lines;
+    }
+
+    case 'playbook': {
+      if (!ctx.entries || ctx.entries.length === 0) {
+        return '🎯 *Playbook*\n\nNo actionable optimizations yet — keep logging expenses (or import statements) and I\'ll surface category-specific tips.';
+      }
+      const headline = '🎯 *Your optimization playbook* (~₹' +
+        Math.round(ctx.totalMonthlyUpsideInr || 0).toLocaleString('en-IN') +
+        '/mo upside)';
+      const blocks = ctx.entries.map(e => {
+        const lines = [
+          '💳 *' + e.category + '* (~₹' + Math.round(e.monthlyAvgSpend).toLocaleString('en-IN') + '/mo)',
+          '   → ' + e.bestCard + ' at ' + e.bestMultiplier + 'x · +₹' + e.estimatedMonthlyUpsideInr + '/mo'
+        ];
+        if (e.hasVoucherTrick && e.voucherTrick) {
+          lines.push('   ▸ ' + truncate(e.voucherTrick, 140));
+        }
+        return lines.join('\n');
+      });
+      return headline + '\n\n' + blocks.join('\n\n');
     }
 
     case 'milestone_progress': {
