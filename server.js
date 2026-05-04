@@ -554,14 +554,18 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
       return sendResponse();
     }
 
-    // ── 4. PDF statement ──────────────────────────────────────────────────
-    if (numMedia > 0 && mediaType === 'application/pdf') {
+    // ── 4. PDF / XLSX statement ───────────────────────────────────────────
+    const isPdf = mediaType === 'application/pdf';
+    const isXlsx = mediaType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                || mediaType === 'application/vnd.ms-excel';
+    if (numMedia > 0 && (isPdf || isXlsx)) {
       // CC statement vs bank statement: user signals via the caption.
-      const isCcStatement = /\b(cc|credit[-\s]*card|card)\s*statement\b/i.test(incomingMsg || '');
+      // XLSX uploads are CC statements only — the existing bank parser is PDF-only.
+      const isCcStatement = isXlsx || /\b(cc|credit[-\s]*card|card)\s*statement\b/i.test(incomingMsg || '');
       if (isCcStatement) {
         twiml.message("💳 Reading your credit-card statement — give me ~30 seconds...");
         sendResponse();
-        processCcStatementAsync(from, mediaUrl, user).catch(err => {
+        processCcStatementAsync(from, mediaUrl, mediaType, user).catch(err => {
           console.error('CC statement error:', err);
           sendWhatsAppTo(from, "⚠️ Couldn't reconcile that CC statement: " + (err.message || 'unknown error'));
         });
@@ -646,8 +650,8 @@ const ccReconcilerDb = {
   updateCcStatement
 };
 
-async function processCcStatementAsync(from, mediaUrl, user) {
-  const parsed = await parseCcStatement({ mediaUrl }, user);
+async function processCcStatementAsync(from, mediaUrl, mediaType, user) {
+  const parsed = await parseCcStatement({ mediaUrl, mediaType }, user);
   if (!parsed.cardUserKey) {
     await sendWhatsAppTo(from,
       `📄 Statement parsed, but I couldn't auto-detect which of your registered cards this is for ` +

@@ -22,7 +22,8 @@
     "graphology-metrics": "^2.4.0",
     "node-cron": "^3.0.3",
     "twilio": "^5.0.0",
-    "voyageai": "^0.2.1"
+    "voyageai": "^0.2.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "jest": "^29.7.0",
