@@ -4,9 +4,13 @@ const twilio = require('twilio');
 const { CATEGORIES, getCategoryEmoji, getMonthName, getVisibleCategories } = require('./constants');
 const { parseExpense, parseExpenseFromImage } = require('./parser');
 const { parsePDFStatement, deduplicateTransactions } = require('./pdf-parser');
+const { parseCcStatement } = require('./cc-statement-parser');
+const { reconcile: reconcileCcStatement } = require('./cc-statement-reconciler');
 const {
   initSheet, appendExpense, batchAppendExpenses, getAllRows, findRecentDuplicate,
   getMonthlySummary, getWeeklySummary, getOverspendAlerts, getMonthlySpendByCard,
+  listExpensesInRange, updateExpense, insertExpense,
+  insertCcStatement, updateCcStatement,
   getBudgets, suggestBudgets, getBudgetStatus,
   checkAnomaly, undoLast, buildDiscretionarySplit, editLastExpense, deleteExpenseById, getExpenseById, bulkRecategorize,
   initUsersSheet, getUser, createUser, updateUser, incrementExpenseCount,
@@ -552,6 +556,17 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
 
     // ── 4. PDF statement ──────────────────────────────────────────────────
     if (numMedia > 0 && mediaType === 'application/pdf') {
+      // CC statement vs bank statement: user signals via the caption.
+      const isCcStatement = /\b(cc|credit[-\s]*card|card)\s*statement\b/i.test(incomingMsg || '');
+      if (isCcStatement) {
+        twiml.message("💳 Reading your credit-card statement — give me ~30 seconds...");
+        sendResponse();
+        processCcStatementAsync(from, mediaUrl, user).catch(err => {
+          console.error('CC statement error:', err);
+          sendWhatsAppTo(from, "⚠️ Couldn't reconcile that CC statement: " + (err.message || 'unknown error'));
+        });
+        return;
+      }
       twiml.message("📄 Got your statement! Analysing — give me a few seconds...");
       sendResponse();
       processPDFAsync(from, mediaUrl, user).catch(err => {
@@ -621,6 +636,42 @@ app.post('/webhook', validateTwilioSignature, async (req, res) => {
 
   sendResponse();
 });
+
+// ─── CC statement async ──────────────────────────────────────────────────────
+const ccReconcilerDb = {
+  listExpensesInRange,
+  updateExpense,
+  insertExpense,
+  insertCcStatement,
+  updateCcStatement
+};
+
+async function processCcStatementAsync(from, mediaUrl, user) {
+  const parsed = await parseCcStatement({ mediaUrl }, user);
+  if (!parsed.cardUserKey) {
+    await sendWhatsAppTo(from,
+      `📄 Statement parsed, but I couldn't auto-detect which of your registered cards this is for ` +
+      `(saw "${parsed.card || 'unknown'}").\n\nRegister the card first via:\n  *statement <card name> <day>*\nthen re-send the PDF with caption "*cc statement*".`
+    );
+    return;
+  }
+  const result = await reconcileCcStatement(parsed, from, ccReconcilerDb, {
+    source: 'whatsapp',
+    sourcePath: mediaUrl
+  });
+  const s = result.summary;
+  const lines = [
+    `📊 *${parsed.cardUserKey}* statement (${parsed.periodStart} → ${parsed.periodEnd})`,
+    `Total spend: ₹${Number(parsed.totalSpend || 0).toLocaleString('en-IN')} · ${(parsed.transactions || []).length} transactions`,
+    '',
+    `✓ ${s.tagged} expenses tagged with this card`,
+    s.dateFixed > 0 ? `📅 ${s.dateFixed} dates corrected` : null,
+    `➕ ${s.newRows} new transactions imported`,
+    s.refunds > 0 ? `↩️ ${s.refunds} refunds noted` : null,
+    s.conflicts > 0 ? `⚠️ ${s.conflicts} conflicts — check Supabase cc_statements.reconcile_log` : null
+  ].filter(Boolean).join('\n');
+  await sendWhatsAppTo(from, lines);
+}
 
 // ─── PDF async ────────────────────────────────────────────────────────────────
 async function processPDFAsync(from, mediaUrl, user) {

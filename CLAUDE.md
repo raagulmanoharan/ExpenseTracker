@@ -34,6 +34,8 @@ No multi-turn state machines for settings. If the user wants to set salary, they
 | `insights.js` | **Spending insights engine.** Tier 2: weekly narrative generation via Claude Haiku + Voyage AI embeddings stored in pgvector for semantic search. Tier 3: graphology spending graph with Louvain community detection + degree centrality. Called by scheduler (daily) and conversation fallback (search). |
 | `card-strategy.js` | **Credit-card rewards optimizer.** `suggestForExpense({amount, category, merchant}, user)` returns the best owned card + multiplier + INR upside, or null when no special rule fires / upside is below threshold. Reads `card-strategies.json`. Called from server.js after every logged expense. |
 | `card-strategies.json` | Per-card knowledge base: aliases, base earn, category multipliers, voucher tricks, milestones, exclusions, transfer partners. Each trick cited (TechnoFino, CardExpert, LiveFromALounge, Reddit). Update this file (not the engine) when issuers devalue or new tricks emerge. |
+| `cc-statement-parser.js` | **CC statement parser** — Claude-vision PDF parser specifically for credit-card statements. Returns `{card, cardUserKey, periodStart/End, totalSpend, transactions[]}`. Identifies which card by reading the statement header and matching against the user's `statementDates` keys + KB aliases. |
+| `cc-statement-reconciler.js` | **CC statement reconciler** — pure logic that maps a parsed statement onto existing expenses. Auto-merges by amount (±₹1) + date (±2 days), flags true conflicts (same amount/date already tagged with a different card). Inserts the `cc_statements` row first so reconciled expenses get an FK. Tested with mock DB — no live calls. |
 | `constants.js` | Shared: CATEGORIES, BASE_CATEGORIES, `getVisibleCategories()`, `isCommitted()`, `isSharedCategory()`, `parseIndianDate()`, `safeParseJSON()`, `getCategoryEmoji()`. |
 
 ### Heartbeat nudge system
@@ -67,6 +69,16 @@ After every logged expense, `card-strategy.js` evaluates the user's owned cards 
 - **Updating the KB**: edit `card-strategies.json` directly. Every multiplier, exclusion, and trick cites a source — add the source URL alongside any new entry. Issuer devaluations are the main reason this file ages; check TechnoFino + LiveFromALounge before changing numbers.
 - **Smoke testing**: `npm run test:card-tip` for an interactive REPL or one-shot evaluation. Use `--phone whatsapp:+91XXXX` to load real cards + real MTD from Supabase without writing anything.
 - **Tests**: `test/card-strategy.test.js` covers fixture-based routing, cap-aware scoring (threshold + limit), `extractCardHint`, grey-area gating, and a real-KB smoke test.
+
+### CC statement import & reconciliation
+Source-of-truth import path: drop CC statement PDFs into `./Statements/` (gitignored) or the Supabase Storage bucket `cc-statements/<phone>/`, then run `npm run import:statements -- --source local|supabase --phone whatsapp:+91XXXX`. Each PDF becomes one `cc_statements` row + reconciled `expenses` updates.
+
+- **What "reconcile" means**: for each transaction in the statement, find existing expenses matching by amount (±₹1) within ±2 days of the statement date. (1) untagged match → tag with the statement's card + `statement_id`, fix date if off. (2) match tagged with a *different* card → conflict, no write, log it. (3) no match → insert as new expense, dated to the statement, tagged with this card. Refunds (`isRefund=true`) increment a counter and skip.
+- **Idempotency**: `cc_statements` has a UNIQUE on `(phone, card, period_start, period_end)`. Re-importing the same statement reuses the existing row and re-runs reconciliation safely.
+- **WhatsApp path**: send the PDF with caption containing "cc statement" / "credit card statement" → routes to `processCcStatementAsync` → reconciles in the background, posts a one-message summary. Without that caption, it goes through the existing bank-statement flow.
+- **Card detection**: parser reads the statement header and matches against the user's `statementDates` keys + KB aliases. If no match, the user gets prompted to register the card first (`statement <name> <day>`) before re-sending.
+- **`Statements/` folder**: local-only workspace. PDFs are in `.gitignore` so they never get committed. Useful for batch-backfilling many old statements at once.
+- **Tests**: `test/cc-reconciler.test.js` covers decision logic with mock DB (insert / update / conflict / refund / dry-run / idempotent-rerun). No API key needed.
 
 ### Household system
 Two or more users can form a household via share codes. Each user messages Budgy 1:1, but summaries and nudges reflect combined household spending for shared categories.
@@ -112,6 +124,7 @@ Run: `npm test` (jest --forceExit). Tests across 5 suites.
 - `test/heartbeat.test.js` — nudge registry, overdue scoring, state persistence
 - `test/household.test.js` — household helpers (isSharedCategory, generateHouseholdId)
 - `test/card-strategy.test.js` — card rewards engine (alias matching, multiplier routing, noise control, grey-area gating, real-KB smoke)
+- `test/cc-reconciler.test.js` — CC statement reconciler (insert/update/conflict decisions, date-fix, dry-run, idempotency)
 
 ### Git repo
 https://github.com/raagulmanoharan/ExpenseTracker
