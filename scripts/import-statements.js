@@ -91,34 +91,42 @@ async function loadUser(phone) {
   return { statementDates: data.statement_dates || {}, salaryType: data.salary_type, salaryDay: data.salary_day };
 }
 
-async function listLocalPdfs(filter) {
+function fileExt(name) {
+  const m = /\.(pdf|xlsx|xls)$/i.exec(name || '');
+  return m ? m[1].toLowerCase() : null;
+}
+
+async function listLocalStatements(filter) {
   const dir = path.join(__dirname, '..', 'Statements');
   if (!fs.existsSync(dir)) return [];
   const files = fs.readdirSync(dir)
-    .filter(f => /\.pdf$/i.test(f))
-    .map(f => ({ name: f, path: path.join(dir, f) }));
+    .filter(f => fileExt(f))
+    .map(f => ({ name: f, path: path.join(dir, f), ext: fileExt(f) }));
   if (filter) return files.filter(f => f.path.endsWith(filter) || f.name === path.basename(filter));
   return files;
 }
 
-async function listSupabasePdfs() {
+async function listSupabaseStatements() {
   const { data, error } = await supabase.storage.from('cc-statements').list(opts.phone, {
     limit: 100, sortBy: { column: 'created_at', order: 'desc' }
   });
   if (error) throw new Error('list bucket: ' + error.message);
-  return (data || []).filter(o => /\.pdf$/i.test(o.name));
+  return (data || [])
+    .filter(o => fileExt(o.name))
+    .map(o => ({ name: o.name, ext: fileExt(o.name) }));
 }
 
-async function readSupabasePdf(name) {
+async function readSupabaseFile(name) {
   const fullPath = `${opts.phone}/${name}`;
   const { data, error } = await supabase.storage.from('cc-statements').download(fullPath);
   if (error) throw new Error('download: ' + error.message);
   return Buffer.from(await data.arrayBuffer());
 }
 
-async function importOne({ pdfBuffer, sourcePath }, user) {
+async function importOne({ buffer, ext, sourcePath }, user) {
   console.log(`\n→ ${sourcePath}`);
-  const parsed = await parseCcStatement({ pdfBuffer }, user);
+  const input = ext === 'pdf' ? { pdfBuffer: buffer } : { xlsxBuffer: buffer };
+  const parsed = await parseCcStatement(input, user);
   console.log(`   card: ${parsed.card || '?'} → resolved to ${parsed.cardUserKey || 'UNRESOLVED'}`);
   console.log(`   period: ${parsed.periodStart} → ${parsed.periodEnd}`);
   console.log(`   transactions: ${parsed.transactions?.length || 0} (totalSpend ₹${parsed.totalSpend || '?'})`);
@@ -157,19 +165,21 @@ async function importOne({ pdfBuffer, sourcePath }, user) {
 
   let queue = [];
   if (opts.source === 'local') {
-    const items = await listLocalPdfs(opts.file);
+    const items = await listLocalStatements(opts.file);
     queue = items.map(it => async () => importOne({
-      pdfBuffer: fs.readFileSync(it.path),
+      buffer: fs.readFileSync(it.path),
+      ext: it.ext,
       sourcePath: `local:${it.name}`
     }, user));
-    console.log(`Found ${items.length} local PDF(s) in ./Statements/`);
+    console.log(`Found ${items.length} statement(s) in ./Statements/ (PDF + XLSX)`);
   } else if (opts.source === 'supabase') {
-    const items = await listSupabasePdfs();
+    const items = await listSupabaseStatements();
     queue = items.map(it => async () => importOne({
-      pdfBuffer: await readSupabasePdf(it.name),
+      buffer: await readSupabaseFile(it.name),
+      ext: it.ext,
       sourcePath: `supabase:${opts.phone}/${it.name}`
     }, user));
-    console.log(`Found ${items.length} PDF(s) in cc-statements/${opts.phone}/`);
+    console.log(`Found ${items.length} statement(s) in cc-statements/${opts.phone}/ (PDF + XLSX)`);
   } else {
     console.error('--source must be local or supabase');
     process.exit(1);

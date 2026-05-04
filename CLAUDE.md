@@ -71,7 +71,7 @@ After every logged expense, `card-strategy.js` evaluates the user's owned cards 
 - **Tests**: `test/card-strategy.test.js` covers fixture-based routing, cap-aware scoring (threshold + limit), `extractCardHint`, grey-area gating, and a real-KB smoke test.
 
 ### CC statement import & reconciliation
-Source-of-truth import path: drop CC statement PDFs into `./Statements/` (gitignored) or the Supabase Storage bucket `cc-statements/<phone>/`, then run `npm run import:statements -- --source local|supabase --phone whatsapp:+91XXXX`. Each PDF becomes one `cc_statements` row + reconciled `expenses` updates.
+Source-of-truth import path: drop CC statement PDFs **or XLSX files** into `./Statements/` (gitignored) or the Supabase Storage bucket `cc-statements/<phone>/`, then run `npm run import:statements -- --source local|supabase --phone whatsapp:+91XXXX`. Each file becomes one `cc_statements` row + reconciled `expenses` updates. XLSX gets converted to CSV-text and fed to Claude as text instead of a document block.
 
 - **What "reconcile" means**: for each transaction in the statement, find existing expenses matching by amount (±₹1) within ±2 days of the statement date. (1) untagged match → tag with the statement's card + `statement_id`, fix date if off. (2) match tagged with a *different* card → conflict, no write, log it. (3) no match → insert as new expense, dated to the statement, tagged with this card. Refunds (`isRefund=true`) increment a counter and skip.
 - **Idempotency**: `cc_statements` has a UNIQUE on `(phone, card, period_start, period_end)`. Re-importing the same statement reuses the existing row and re-runs reconciliation safely.

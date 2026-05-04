@@ -17,6 +17,13 @@ const { client, callWithRetry } = require('./anthropic-client');
 const { CATEGORIES, safeParseJSON } = require('./constants');
 const { matchUserCards, loadKB } = require('./card-strategy');
 
+// xlsx is a runtime dep — required lazily so unit tests don't pull it in.
+let _xlsx = null;
+function xlsxLib() { return _xlsx || (_xlsx = require('xlsx')); }
+
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const XLS_MIME = 'application/vnd.ms-excel';
+
 function buildSystemPrompt(user) {
   const cards = user?.statementDates ? Object.keys(user.statementDates) : [];
   const cardContext = cards.length > 0
@@ -62,39 +69,74 @@ Return ONLY the JSON object. No prose, no markdown fences.`;
 }
 
 /**
- * Parse a CC statement PDF.
+ * Convert an XLSX/XLS workbook to a single text representation Claude can parse.
+ * Concatenates each sheet as CSV with a header line.
+ */
+function xlsxBufferToText(buffer) {
+  const wb = xlsxLib().read(buffer, { type: 'buffer' });
+  const parts = [];
+  for (const name of wb.SheetNames) {
+    const sheet = wb.Sheets[name];
+    const csv = xlsxLib().utils.sheet_to_csv(sheet, { rawNumbers: false });
+    if (csv.trim().length === 0) continue;
+    parts.push(`### Sheet: ${name}\n${csv}`);
+  }
+  return parts.join('\n\n');
+}
+
+/**
+ * Parse a CC statement (PDF or XLSX/XLS).
  * @param {object} input - one of:
- *   { mediaUrl: string, twilioAuth?: {username, password} } — for WhatsApp PDFs
- *   { pdfBuffer: Buffer } — for local files / Supabase blobs
- * @param {object} user - user profile (statementDates used for card detection)
- * @returns {Promise<object>} parsed statement
+ *   { pdfBuffer: Buffer }                  — local PDF
+ *   { xlsxBuffer: Buffer }                 — local XLSX/XLS
+ *   { mediaUrl: string, mediaType?: string, twilioAuth?: {username, password} }
+ *     — WhatsApp media, mediaType selects PDF vs XLSX path
+ * @param {object} user
  */
 async function parseCcStatement(input, user) {
-  let base64PDF;
+  let format = null;     // 'pdf' | 'xlsx'
+  let base64PDF = null;
+  let xlsxText = null;
+
   if (input.pdfBuffer) {
+    format = 'pdf';
     base64PDF = Buffer.from(input.pdfBuffer).toString('base64');
+  } else if (input.xlsxBuffer) {
+    format = 'xlsx';
+    xlsxText = xlsxBufferToText(input.xlsxBuffer);
   } else if (input.mediaUrl) {
     const auth = input.twilioAuth || {
       username: process.env.TWILIO_ACCOUNT_SID,
       password: process.env.TWILIO_AUTH_TOKEN
     };
     const res = await axios.get(input.mediaUrl, { responseType: 'arraybuffer', auth });
-    base64PDF = Buffer.from(res.data).toString('base64');
+    const buf = Buffer.from(res.data);
+    const mt = (input.mediaType || '').toLowerCase();
+    if (mt === XLSX_MIME || mt === XLS_MIME) {
+      format = 'xlsx';
+      xlsxText = xlsxBufferToText(buf);
+    } else {
+      format = 'pdf';
+      base64PDF = buf.toString('base64');
+    }
   } else {
-    throw new Error('parseCcStatement: either pdfBuffer or mediaUrl required');
+    throw new Error('parseCcStatement: pdfBuffer, xlsxBuffer, or mediaUrl required');
   }
+
+  const userContent = format === 'pdf'
+    ? [
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64PDF } },
+        { type: 'text', text: 'Parse this credit-card statement. Return ONLY the JSON object specified.' }
+      ]
+    : [
+        { type: 'text', text: 'Parse this credit-card statement (exported as a spreadsheet — multiple sheets concatenated below as CSV). Return ONLY the JSON object specified.\n\n' + xlsxText }
+      ];
 
   const response = await callWithRetry(() => client.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 8000,
     system: buildSystemPrompt(user),
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64PDF } },
-        { type: 'text', text: 'Parse this credit-card statement. Return ONLY the JSON object specified.' }
-      ]
-    }]
+    messages: [{ role: 'user', content: userContent }]
   }));
 
   const raw = response.content[0].text.trim();
@@ -141,4 +183,4 @@ function resolveCardKey(parsedCardName, user) {
   return null;
 }
 
-module.exports = { parseCcStatement, resolveCardKey };
+module.exports = { parseCcStatement, resolveCardKey, xlsxBufferToText, XLSX_MIME, XLS_MIME };
