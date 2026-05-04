@@ -224,6 +224,85 @@ function generateHouseholdId() {
   return code;
 }
 
+// ─── Forecasting helpers ────────────────────────────────────────────────────
+// Both pure — no DB access, no side effects. Tested in test/forecasting.test.js.
+
+/**
+ * Exponential weighted moving average. Recent values weight more.
+ * halfLife = number of "steps" after which weight halves. Default 7 (days).
+ * Returns the EWMA evaluated at the latest point (suitable as a "current rate").
+ *
+ * @param {number[]} values - chronologically ordered series (oldest → newest).
+ * @param {number} halfLife
+ */
+function computeEwma(values, halfLife) {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  const hl = Math.max(1, halfLife || 7);
+  const alpha = 1 - Math.pow(0.5, 1 / hl);
+  let v = Number(values[0]) || 0;
+  for (let i = 1; i < values.length; i++) {
+    const x = Number(values[i]) || 0;
+    v = alpha * x + (1 - alpha) * v;
+  }
+  return v;
+}
+
+/**
+ * Day-of-week factors. Given a series of [{date: Date, amount: number}],
+ * returns factor[0..6] where factor[d] = avgSpendOnDow_d / globalAvg.
+ * Returns all-1.0 (no adjustment) if history is too sparse.
+ *
+ * @param {Array<{date: Date|string, amount: number}>} history
+ * @returns {{factors: number[], counts: number[], avgByDow: number[], avgGlobal: number}}
+ */
+function computeDowFactors(history) {
+  const sumByDow = [0, 0, 0, 0, 0, 0, 0];
+  const countByDow = [0, 0, 0, 0, 0, 0, 0];
+  let total = 0;
+  let totalCount = 0;
+  for (const r of history || []) {
+    const d = r.date instanceof Date ? r.date : new Date(r.date);
+    if (isNaN(d.getTime())) continue;
+    const amt = Number(r.amount) || 0;
+    const dow = d.getDay();
+    sumByDow[dow] += amt;
+    countByDow[dow]++;
+    total += amt;
+    totalCount++;
+  }
+  // Need at least one observation per DOW to compute factors; otherwise neutral.
+  const minObservations = 4; // rough heuristic
+  if (totalCount < minObservations || total === 0) {
+    return { factors: [1, 1, 1, 1, 1, 1, 1], counts: countByDow, avgByDow: [0, 0, 0, 0, 0, 0, 0], avgGlobal: 0 };
+  }
+  const avgGlobal = total / totalCount;
+  const avgByDow = sumByDow.map((s, i) => countByDow[i] > 0 ? s / countByDow[i] : avgGlobal);
+  const factors = avgByDow.map(a => avgGlobal > 0 ? a / avgGlobal : 1);
+  return { factors, counts: countByDow, avgByDow, avgGlobal };
+}
+
+/**
+ * Forecast remaining-cycle spend using EWMA daily rate × DOW factors per day.
+ *
+ * @param {Date} fromDate - start of the projection window (typically tomorrow)
+ * @param {Date} toDate   - end (inclusive) of the projection window
+ * @param {number} dailyRate - EWMA-estimated rate per day (₹/day)
+ * @param {number[]} dowFactors - 7-element factor array from computeDowFactors
+ */
+function projectRemainingCycle(fromDate, toDate, dailyRate, dowFactors) {
+  let total = 0;
+  const cur = new Date(fromDate);
+  cur.setHours(0, 0, 0, 0);
+  const end = new Date(toDate);
+  end.setHours(0, 0, 0, 0);
+  while (cur.getTime() <= end.getTime()) {
+    const f = (dowFactors && dowFactors[cur.getDay()]) || 1;
+    total += dailyRate * f;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return total;
+}
+
 module.exports = {
   PAY_DATES_2026,
   getSalaryCycleBounds,
@@ -239,5 +318,8 @@ module.exports = {
   getDaysUntilStatement,
   getBillingCycleAdvice,
   isWithinSessionWindow,
-  generateHouseholdId
+  generateHouseholdId,
+  computeEwma,
+  computeDowFactors,
+  projectRemainingCycle
 };
