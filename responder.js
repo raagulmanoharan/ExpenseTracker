@@ -340,14 +340,24 @@ Format as a personal "playbook" for WhatsApp. Lead with the headline (~₹X/mont
     case 'milestone_progress':
       return `${nameCtx}Show the user's progress toward each card's annual milestone tiers.
 
-YTD window: ${ctx.windowStart} → ${ctx.windowEnd}
+YTD window (rolling 365 days): ${ctx.windowStart} → ${ctx.windowEnd}
 
 ${(ctx.cards || []).map(c => `${c.card} — spent ₹${Math.round(c.ytdSpend).toLocaleString('en-IN')} YTD\n${(c.tiers || []).map(t => `  ${t.hit ? '✅' : '⏳'} ₹${Math.round(t.threshold).toLocaleString('en-IN')} → ${t.reward} (${t.progressPct}%${t.hit ? '' : ', ₹' + Math.round(t.remainingInr).toLocaleString('en-IN') + ' to go'})`).join('\n')}`).join('\n\n') || '(no milestone-eligible cards owned)'}
 
-Format as a clean per-card WhatsApp summary. If no milestones, say "none of your cards have spend-based milestone bonuses". For partial progress, highlight the closest unmet tier.`;
+Format as a clean per-card WhatsApp summary. End with a single italic caveat line (one-liner): "_Window is the last 365 days — your card's actual milestone year may start on a different anniversary date._" If no milestones, say "none of your cards have spend-based milestone bonuses". For partial progress, highlight the closest unmet tier.`;
 
-    case 'error':
-      return `Something went wrong processing the user's message. Apologize briefly and ask them to try again. 1 line.`;
+    case 'error': {
+      // Error category drives the recovery hint. See server.classifyError.
+      const t = ctx.type || 'unknown';
+      const lines = {
+        transient:   'A brief upstream blip — apologise lightly and ask them to retry in a few seconds.',
+        ai_parser:   "Apologise briefly. The parser couldn't read their message; suggest the simple format \"lunch 280 Swiggy\".",
+        media:       "Apologise briefly. Couldn't read the photo/PDF; suggest a clearer image or different file.",
+        persistence: 'Saving expenses is having trouble. Apologise briefly, ask them to retry in a minute.',
+        unknown:     "Apologise briefly. Don't speculate on the cause."
+      };
+      return `Something went wrong. Reply in 1 short line. ${lines[t] || lines.unknown}`;
+    }
 
     default:
       return `${nameCtx}Compose a brief, friendly WhatsApp reply for this action: ${actionType}\n\nContext: ${JSON.stringify(ctx)}`;
@@ -583,11 +593,20 @@ function getFallback(actionType, ctx) {
         ).join('\n');
         return '💳 *' + c.card + '* — ₹' + Math.round(c.ytdSpend).toLocaleString('en-IN') + ' YTD\n' + tiers;
       }).join('\n\n');
-      return '🎯 *Milestone progress* (' + (ctx.windowStart || '') + ' → ' + (ctx.windowEnd || '') + ')\n\n' + cardBlocks;
+      return '🎯 *Milestone progress* (rolling 365d: ' + (ctx.windowStart || '') + ' → ' + (ctx.windowEnd || '') + ')\n\n' + cardBlocks +
+        '\n\n_Window is the last 365 days — your card\'s actual milestone year may start on a different anniversary date._';
     }
 
-    case 'error':
-      return '⚠️ Something went wrong. Try again!';
+    case 'error': {
+      // Mirrors fallbackErrorMessage in server.js for the no-Claude-available path.
+      switch (ctx.type) {
+        case 'transient':   return '🌐 Brief blip — try again in a few seconds.';
+        case 'ai_parser':   return "🤔 Couldn't quite read that. Try \"lunch 280 Swiggy\".";
+        case 'media':       return "📎 Couldn't read that file — try a clearer photo or different PDF.";
+        case 'persistence': return '💾 Saving is having trouble — try again in a minute.';
+        default:            return '⚠️ Something went wrong. Try again!';
+      }
+    }
 
     default:
       return ctx.text || '⚠️ Something went wrong. Try again!';

@@ -10,6 +10,7 @@ const {
   getISOWeek,
   parseSalaryInput, parseStatementInput, getDaysUntilStatement, getBillingCycleAdvice,
   isWithinSessionWindow, generateHouseholdId,
+  shouldAskHint, buildHintUpdate,
   computeEwma, computeDowFactors, projectRemainingCycle
 } = require('./utils');
 
@@ -799,7 +800,8 @@ async function getUser(phone) {
     expenseCount: data.expense_count || 0,
     lastMessageAt: data.last_message_at || null,
     householdId: data.household_id || null,
-    sharedCategories: data.shared_categories || null
+    sharedCategories: data.shared_categories || null,
+    setupHintsSent: data.setup_hints_sent || {}
   };
 }
 
@@ -819,7 +821,7 @@ async function createUser(phone, name) {
     phone, name, salaryType: null, salaryDay: null,
     cards: [], statementDates: {}, joined: now.toISOString(),
     expenseCount: 0, lastMessageAt: now.toISOString(),
-    householdId: null, sharedCategories: null
+    householdId: null, sharedCategories: null, setupHintsSent: {}
   };
 }
 
@@ -834,6 +836,7 @@ async function updateUser(phone, updates) {
   if (updates.lastMessageAt !== undefined) mapped.last_message_at = updates.lastMessageAt;
   if (updates.householdId !== undefined) mapped.household_id = updates.householdId || null;
   if (updates.sharedCategories !== undefined) mapped.shared_categories = updates.sharedCategories;
+  if (updates.setupHintsSent !== undefined) mapped.setup_hints_sent = updates.setupHintsSent;
 
   const { error } = await supabase.from('users').update(mapped).eq('phone', phone);
   if (error) throw new Error('updateUser failed: ' + error.message);
@@ -874,7 +877,8 @@ async function getAllUsers() {
     expenseCount: row.expense_count || 0,
     lastMessageAt: row.last_message_at || null,
     householdId: row.household_id || null,
-    sharedCategories: row.shared_categories || null
+    sharedCategories: row.shared_categories || null,
+    setupHintsSent: row.setup_hints_sent || {}
   }));
 }
 
@@ -905,7 +909,8 @@ async function getHouseholdMembers(phone) {
     expenseCount: row.expense_count || 0,
     lastMessageAt: row.last_message_at || null,
     householdId: row.household_id || null,
-    sharedCategories: row.shared_categories || null
+    sharedCategories: row.shared_categories || null,
+    setupHintsSent: row.setup_hints_sent || {}
   }));
 }
 
@@ -1152,5 +1157,6 @@ module.exports = {
   buildDiscretionarySplit,
   getSalaryCycleBounds, computeUserCycleBounds,
   parseSalaryInput, parseStatementInput, getDaysUntilStatement, getBillingCycleAdvice,
-  isWithinSessionWindow
+  isWithinSessionWindow,
+  shouldAskHint, buildHintUpdate
 };
