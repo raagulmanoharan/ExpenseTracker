@@ -8,7 +8,7 @@ const { VoyageAIClient } = require('voyageai');
 const Graph = require('graphology');
 const louvain = require('graphology-communities-louvain');
 const { centrality } = require('graphology-metrics');
-const { client: anthropicClient, callWithRetry } = require('./anthropic-client');
+const { client: anthropicClient, callWithRetry, MODELS } = require('./anthropic-client');
 const { isCommitted, getCategoryEmoji } = require('./constants');
 
 // ─── Clients (lazy init — avoids crash when env vars missing in tests) ──────
@@ -79,7 +79,7 @@ Write as a factual spending snapshot — no advice. Include amounts and merchant
 
   try {
     const response = await callWithRetry(() => anthropicClient.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: MODELS.insightSummarizer,
       max_tokens: 200,
       messages: [{ role: 'user', content: prompt }]
     }));

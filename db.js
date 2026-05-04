@@ -298,6 +298,37 @@ async function getMonthlySpendByCard(phone, card) {
   return (data || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
 }
 
+// MTD spend (current salary cycle) for ALL the user's tagged cards in one
+// SELECT. Returns a map { cardKey: amountInr } — used by card-strategy.js
+// `suggestForExpense` via `opts.mtdByCard` to skip the per-card N+1 lookup.
+// Card key normalization mirrors `card-strategy.js`: uppercased, alnum-only.
+async function getMonthlyMtdByCardForUser(phone, userArg) {
+  if (!phone) return {};
+  const user = userArg || await getUser(phone);
+  const userConfig = user && user.salaryType ? { salaryType: user.salaryType, salaryDay: user.salaryDay } : null;
+  const { cycleStart, cycleEnd } = getSalaryCycleBounds(new Date(), userConfig);
+  const startStr = cycleStart.toISOString().split('T')[0];
+  const endStr = cycleEnd.toISOString().split('T')[0];
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('card, amount')
+    .eq('phone', phone)
+    .not('card', 'is', null)
+    .gte('date', startStr)
+    .lte('date', endStr);
+  if (error) {
+    console.error('[getMonthlyMtdByCardForUser]', error.message);
+    return {};
+  }
+  const byCard = {};
+  for (const r of data || []) {
+    const k = r.card;
+    if (!k) continue;
+    byCard[k] = (byCard[k] || 0) + Number(r.amount || 0);
+  }
+  return byCard;
+}
+
 // ─── CC statement helpers ─────────────────────────────────────────────────
 async function listExpensesInRange(phone, fromDate, toDate) {
   const { data, error } = await supabase
@@ -322,17 +353,13 @@ async function insertExpense(row) {
 }
 
 async function insertCcStatement(row) {
-  // Idempotent: if (phone, card, period_start, period_end) exists, return existing id.
-  const existing = await supabase
+  // Idempotent via UNIQUE (phone, card, period_start, period_end). Upsert
+  // re-uses the existing row's id atomically — no SELECT-then-INSERT race.
+  const { data, error } = await supabase
     .from('cc_statements')
+    .upsert(row, { onConflict: 'phone,card,period_start,period_end' })
     .select('id')
-    .eq('phone', row.phone)
-    .eq('card', row.card)
-    .eq('period_start', row.period_start)
-    .eq('period_end', row.period_end)
-    .maybeSingle();
-  if (existing.data) return existing.data;
-  const { data, error } = await supabase.from('cc_statements').insert(row).select('id').single();
+    .single();
   if (error) throw new Error('insertCcStatement: ' + error.message);
   return data;
 }
@@ -1101,7 +1128,7 @@ module.exports = {
   getRecentExpensesWithIds, getHouseholdExpensesWithIds,
   findRecentDuplicate,
   // Summaries
-  getMonthlySummary, getWeeklySummary, getOverspendAlerts, getMonthlySpendByCard,
+  getMonthlySummary, getWeeklySummary, getOverspendAlerts, getMonthlySpendByCard, getMonthlyMtdByCardForUser,
   listExpensesInRange, updateExpense, insertExpense,
   insertCcStatement, updateCcStatement, listCcStatements,
   getBudgets, suggestBudgets, getBudgetStatus,

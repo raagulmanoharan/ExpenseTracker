@@ -1,4 +1,4 @@
-const { client, callWithRetry } = require('./anthropic-client');
+const { client, callWithRetry, MODELS, cachedSystem } = require('./anthropic-client');
 const { safeParseJSON } = require('./constants');
 
 function buildSystemPrompt(user, hasInsights) {
@@ -209,9 +209,11 @@ async function handleConversation(message, dataOrInsights, user) {
 
   try {
     const response = await callWithRetry(() => client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: MODELS.conversation,
       max_tokens: 1000,
-      system: buildSystemPrompt(user, hasInsights),
+      // System prompt is per-user (cards + household flag) but stable
+      // within a session — caching saves ~1K tokens on repeat questions.
+      system: cachedSystem(buildSystemPrompt(user, hasInsights)),
       messages: [{
         role: 'user',
         content: `Spending data:\n${contextStr}\n\nUser message: "${message}"`

@@ -8,7 +8,7 @@ const { parseCcStatement } = require('./cc-statement-parser');
 const { reconcile: reconcileCcStatement } = require('./cc-statement-reconciler');
 const {
   initSheet, appendExpense, batchAppendExpenses, getAllRows, findRecentDuplicate,
-  getMonthlySummary, getWeeklySummary, getOverspendAlerts, getMonthlySpendByCard,
+  getMonthlySummary, getWeeklySummary, getOverspendAlerts, getMonthlySpendByCard, getMonthlyMtdByCardForUser,
   listExpensesInRange, updateExpense, insertExpense,
   insertCcStatement, updateCcStatement,
   getSalaryCycleBounds,
@@ -833,10 +833,12 @@ async function handleExpenseResult(result, raw, from, user) {
 
     let cardTip = null;
     try {
+      // One SELECT for all owned cards — replaces the per-card mtdLookup N+1.
+      const mtdByCard = await getMonthlyMtdByCardForUser(from, freshUser || user);
       cardTip = await suggestCardStrategy(
         { amount, category, merchant },
         freshUser || user,
-        { mtdLookup: (cardKey) => getMonthlySpendByCard(from, cardKey) }
+        { mtdByCard }
       );
     } catch (e) {
       console.error('[card-strategy] suggestion failed:', e.message);
@@ -998,10 +1000,11 @@ async function handleExpenseResult(result, raw, from, user) {
 
   } else if (result.type === 'playbook') {
     const u = await getUser(from);
+    const mtdByCard = await getMonthlyMtdByCardForUser(from, u);
     const playbook = await getPersonalizedPlaybook(from, {
       db: { listExpensesInRange, getUser },
       user: u,
-      mtdLookup: (cardKey) => getMonthlySpendByCard(from, cardKey)
+      mtdByCard
     });
     return await composeResponse('playbook', playbook, user);
 

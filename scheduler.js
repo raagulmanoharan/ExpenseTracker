@@ -9,7 +9,7 @@ const {
   getLastEntryInfo,
   getAllUsers,
   isWithinSessionWindow,
-  listExpensesInRange, getUser, getMonthlySpendByCard,
+  listExpensesInRange, getUser, getMonthlyMtdByCardForUser,
   getSalaryCycleBounds
 } = require('./db');
 const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppTemplate, sendWhatsAppImageBroadcast } = require('./messaging');
@@ -595,10 +595,11 @@ const NUDGE_CHECKS = [
       // Only fire within first 2 days of the new cycle.
       if (daysIntoCycle < 0 || daysIntoCycle > 2) return null;
 
+      const mtdByCard = await getMonthlyMtdByCardForUser(user.phone, user);
       const playbook = await getPersonalizedPlaybook(user.phone, {
         db: { listExpensesInRange, getUser },
         user,
-        mtdLookup: function(cardKey) { return getMonthlySpendByCard(user.phone, cardKey); }
+        mtdByCard
       });
       if (!playbook.entries || playbook.entries.length === 0) return null;
 

@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { client, callWithRetry } = require('./anthropic-client');
+const { client, callWithRetry, MODELS, cachedSystem } = require('./anthropic-client');
 const { CATEGORIES, safeParseJSON } = require('./constants');
 
 const SYSTEM_PROMPT = `You are a smart intent classifier for a WhatsApp expense tracker called Budgy, used by someone in India.
@@ -112,9 +112,9 @@ SECURITY:
 
 async function parseExpense(message) {
   const response = await callWithRetry(() => client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: MODELS.intentClassifier,
     max_tokens: 300,
-    system: SYSTEM_PROMPT,
+    system: cachedSystem(SYSTEM_PROMPT),
     messages: [{ role: 'user', content: message }]
   }));
   return safeParseJSON(response.content[0].text);
@@ -130,9 +130,9 @@ async function parseExpenseFromImage(mediaUrl, mediaType, caption) {
   const prompt = caption ? `Expense image. User note: "${caption}". Extract expense.` : 'Receipt or bank SMS. Extract the expense.';
 
   const response = await callWithRetry(() => client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: MODELS.expenseImage,
     max_tokens: 300,
-    system: SYSTEM_PROMPT,
+    system: cachedSystem(SYSTEM_PROMPT),
     messages: [{ role: 'user', content: [
       { type: 'image', source: { type: 'base64', media_type: resolvedType, data: base64Image } },
       { type: 'text', text: prompt }

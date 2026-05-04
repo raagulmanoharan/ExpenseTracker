@@ -4,22 +4,10 @@
 
 const { isCommitted, parseIndianDate, getCategoryEmoji } = require('./constants');
 
-// ─── Salary cycle (Salesforce India 2026 pay schedule) ───────────────────────
-const PAY_DATES_2026 = [
-  new Date('2026-01-29'),
-  new Date('2026-02-26'),
-  new Date('2026-03-27'),
-  new Date('2026-04-29'),
-  new Date('2026-05-28'),
-  new Date('2026-06-29'),
-  new Date('2026-07-29'),
-  new Date('2026-08-28'),
-  new Date('2026-09-29'),
-  new Date('2026-10-29'),
-  new Date('2026-11-27'),
-  new Date('2026-12-29'),
-];
-
+// ─── Salary cycle ────────────────────────────────────────────────────────────
+// Default cycle is the calendar month. Users configure their actual pay date
+// via "salary 26" / "salary last" / "salary last working day" — see
+// computeUserCycleBounds for the three configurable types.
 function getSalaryCycleBounds(referenceDate, userConfig) {
   const d = referenceDate || new Date();
   const today = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -28,23 +16,8 @@ function getSalaryCycleBounds(referenceDate, userConfig) {
     return computeUserCycleBounds(today, userConfig);
   }
 
-  let cycleStart = null;
-  for (let i = PAY_DATES_2026.length - 1; i >= 0; i--) {
-    if (PAY_DATES_2026[i] <= today) { cycleStart = PAY_DATES_2026[i]; break; }
-  }
-
-  let cycleEnd = null;
-  for (let i = 0; i < PAY_DATES_2026.length; i++) {
-    if (PAY_DATES_2026[i] > (cycleStart || today)) {
-      cycleEnd = new Date(PAY_DATES_2026[i]);
-      cycleEnd.setDate(cycleEnd.getDate() - 1);
-      break;
-    }
-  }
-
-  if (!cycleStart) cycleStart = new Date(today.getFullYear(), today.getMonth(), 1);
-  if (!cycleEnd) cycleEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-
+  const cycleStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const cycleEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
   cycleEnd.setHours(23, 59, 59, 999);
   return { cycleStart, cycleEnd };
 }
@@ -304,7 +277,6 @@ function projectRemainingCycle(fromDate, toDate, dailyRate, dowFactors) {
 }
 
 module.exports = {
-  PAY_DATES_2026,
   getSalaryCycleBounds,
   computeUserCycleBounds,
   getCycleLabel,

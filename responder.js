@@ -2,7 +2,7 @@
 // Replaces hardcoded response templates with Claude-composed WhatsApp messages.
 // Uses Haiku for speed (~300-800ms). Falls back to static templates on failure.
 
-const { client, callWithRetry } = require('./anthropic-client');
+const { client, callWithRetry, MODELS, cachedSystem } = require('./anthropic-client');
 const { getCategoryEmoji, getVisibleCategories } = require('./constants');
 
 const SYSTEM_PROMPT = `You are Budgy — a friendly WhatsApp expense tracker for people in India.
@@ -39,9 +39,9 @@ async function composeResponse(actionType, context, user) {
 
   try {
     const response = await callWithRetry(() => client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: MODELS.responseComposer,
       max_tokens: 500,
-      system: SYSTEM_PROMPT,
+      system: cachedSystem(SYSTEM_PROMPT),
       messages: [{ role: 'user', content: userMessage }]
     }));
     const text = response.content[0].text.trim();
@@ -183,9 +183,14 @@ ${ctx.duplicates} duplicate${ctx.duplicates > 1 ? 's' : ''} skipped.
 Let them know briefly — they're already up to date.`;
 
     case 'onboarding_welcome':
-      return `Compose a first-time welcome message for Budgy (a WhatsApp expense tracker).
+      return `Compose a first-time welcome message for Budgy (a WhatsApp expense tracker for India).
 
-Ask for the user's name. Keep it friendly and short — 2 lines max. Don't explain features yet.`;
+Combine three things in one short message (4 lines max):
+1. One-line value prop ("Track expenses by WhatsApp — no app to install")
+2. One concrete example ("Just type 'lunch 280 Swiggy' and I'll log it")
+3. The name ask ("What should I call you?")
+
+Tone: warm, casual, no marketing fluff. Don't list every feature.`;
 
     case 'onboarding_name_received':
       return `${nameCtx}The user just told us their name. Welcome them and show them how to get started.
@@ -255,17 +260,34 @@ Give examples: "salary 26" or "salary last" or "salary last working day". Keep i
     case 'help':
       return `${nameCtx}The user needs help. List what Budgy can do, briefly.
 
-Features:
-- Log expenses by text ("lunch 250 Swiggy")
-- Send receipt/SMS screenshots
-- Upload bank statement PDFs
-- Monthly summary ("summary")
-- Weekly summary ("this week")
-- Budget suggestions ("suggest budgets")
-- Undo last entry ("undo")
-- Household: create, join, manage shared categories
+Logging:
+- Text ("lunch 250 Swiggy")
+- Receipt or bank-SMS screenshot
+- Bank or credit-card statement PDF / XLSX
 
-Format as a clean, scannable list for WhatsApp.`;
+Quick views:
+- summary (monthly)
+- this week (weekly)
+- suggest budgets (after 2+ weeks)
+- undo (remove last)
+
+Card rewards (after CC statement import):
+- rewards report (earned vs optimal this cycle)
+- missing rewards (where you used the wrong card)
+- playbook (personal optimization plan)
+- milestone progress (Plat Travel / Atlas tiers)
+- weekday pattern (which day you spend most)
+
+Just ask:
+- "what's my biggest spend?"
+- "how much on food this month?"
+- "compare this cycle to last"
+- "fix all the CRED entries"
+
+Household:
+- create household / join <code> / my household / make food shared
+
+Format as a clean, scannable list for WhatsApp. Use section headers (no markdown #) and 1-2 emojis for visual hierarchy.`;
 
     case 'rewards_report':
       return `${nameCtx}Compose a credit-card rewards report for this cycle.
@@ -436,7 +458,9 @@ function getFallback(actionType, ctx) {
       return '✅ All ' + ctx.total + ' transactions already logged! ' + ctx.duplicates + ' duplicate(s) skipped.';
 
     case 'onboarding_welcome':
-      return "Hey! I'm Budgy — your personal expense tracker on WhatsApp.\n\nWhat's your name?";
+      return "👋 Hi, I'm Budgy — track expenses by WhatsApp.\n\n" +
+        "Just type \"lunch 280 Swiggy\" and I'll log it. Send receipt photos or bank SMS too.\n\n" +
+        "What should I call you?";
 
     case 'onboarding_name_received':
       return 'Nice to meet you, ' + (ctx.name || 'there') + '!\n\nSend me any expense — just type it naturally:\n"lunch 280 Swiggy"   "auto 80"   "groceries 1200"\n\nOr send a receipt photo or bank SMS screenshot 📸\n\n*Shortcuts:*\n• summary — monthly spending\n• this week — weekly breakdown\n• undo — remove last entry\n• suggest budgets — AI budget suggestions\n• export — download CSV\n• create household — track with family';
@@ -457,18 +481,28 @@ function getFallback(actionType, ctx) {
       return (ctx.expenseConfirmation ? ctx.expenseConfirmation + '\n\n' : '') + 'Quick question — when does your salary come in? Knowing this helps me track spending by your actual pay cycle.\n\nJust send: *salary 26* or *salary last* or *salary last working day*';
 
     case 'help':
-      return '👋 Send me:\n' +
+      return '👋 *Logging*\n' +
         '• "lunch 250 Swiggy" — log expense\n' +
-        '• Receipt or bank SMS screenshot 📸\n' +
-        '• Bank statement PDF 📄\n' +
+        '• Receipt or bank-SMS screenshot 📸\n' +
+        '• Bank or credit-card statement (PDF/XLSX) 📄\n\n' +
+        '📊 *Quick views*\n' +
         '• summary — monthly total\n' +
         '• this week — weekly breakdown\n' +
         '• suggest budgets — after 2+ weeks of data\n' +
         '• undo — remove last entry\n\n' +
-        '🏠 *Household:*\n' +
-        '• create household — start a family group\n' +
-        '• join <code> — join existing\n' +
-        '• my household — see members & settings';
+        '💳 *Card rewards*\n' +
+        '• rewards report — earned vs optimal\n' +
+        '• missing rewards — wrong-card spends\n' +
+        '• playbook — your optimization plan\n' +
+        '• milestone progress — tier progress\n' +
+        '• weekday pattern — top spending day\n\n' +
+        '💬 *Or just ask:*\n' +
+        '• "what\'s my biggest spend?"\n' +
+        '• "how much on food this month?"\n' +
+        '• "compare this cycle to last"\n' +
+        '• "fix all the CRED entries"\n\n' +
+        '🏠 *Household*\n' +
+        '• create household / join <code> / my household';
 
     case 'rewards_report': {
       if (!ctx.cards || ctx.cards.length === 0) {
