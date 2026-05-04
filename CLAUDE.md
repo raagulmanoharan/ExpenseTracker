@@ -32,6 +32,8 @@ No multi-turn state machines for settings. If the user wants to set salary, they
 | `parser.js` | Claude AI intent classifier + expense parser. Text -> structured intent (expense, summary, salary, statement, purchase timing, unknown). Includes prompt injection guardrails. |
 | `pdf-parser.js` | Bank statement PDF parser via Claude vision. Deduplicates against existing rows before import. |
 | `insights.js` | **Spending insights engine.** Tier 2: weekly narrative generation via Claude Haiku + Voyage AI embeddings stored in pgvector for semantic search. Tier 3: graphology spending graph with Louvain community detection + degree centrality. Called by scheduler (daily) and conversation fallback (search). |
+| `card-strategy.js` | **Credit-card rewards optimizer.** `suggestForExpense({amount, category, merchant}, user)` returns the best owned card + multiplier + INR upside, or null when no special rule fires / upside is below threshold. Reads `card-strategies.json`. Called from server.js after every logged expense. |
+| `card-strategies.json` | Per-card knowledge base: aliases, base earn, category multipliers, voucher tricks, milestones, exclusions, transfer partners. Each trick cited (TechnoFino, CardExpert, LiveFromALounge, Reddit). Update this file (not the engine) when issuers devalue or new tricks emerge. |
 | `constants.js` | Shared: CATEGORIES, BASE_CATEGORIES, `getVisibleCategories()`, `isCommitted()`, `isSharedCategory()`, `parseIndianDate()`, `safeParseJSON()`, `getCategoryEmoji()`. |
 
 ### Heartbeat nudge system
@@ -52,6 +54,16 @@ The heartbeat ticks every 30 minutes. On each tick:
 - **Projection-based pace analysis**: `dailyRate * totalCycleDays = projectedTotal`. Comparison requires 3+ categories and Rs.2000+ in previous cycle.
 - **Response-sent guard**: `sendResponse()` in webhook prevents double TwiML sends on async paths (PDF processing, chart sending).
 - **Onboarding**: New users get name prompt -> profile creation. Existing users without profiles get silent auto-creation.
+
+### Card rewards optimizer
+After every logged expense, `card-strategy.js` evaluates the user's owned cards against a static knowledge base (`card-strategies.json`) and may append a one-line forward-looking tip ("next time use *X* at 5x → ~₹Y more").
+
+- **Auto-suggest, opportunity-only**: only fires when (a) the category has a known multiplier on at least one owned card, (b) `upsideInr ≥ 50` vs the best owned card's vanilla base earn. Otherwise silent.
+- **Forward-looking framing**: Budgy doesn't know which card you actually used, so the tip is always "next time", never "you should have".
+- **Card matching**: KB cards have `aliases[]` (uppercased, normalized). Engine matches them against `user.statementDates` keys with substring containment in either direction. Edit aliases when a new variant slips through.
+- **Grey-area gating**: voucher tricks flagged `greyArea: true` (rent loops, MCC abuse) are off by default. Pass `{ allowGreyArea: true }` to opt in (no UI toggle yet).
+- **Updating the KB**: edit `card-strategies.json` directly. Every multiplier, exclusion, and trick cites a source — add the source URL alongside any new entry. Issuer devaluations are the main reason this file ages; check TechnoFino + LiveFromALounge before changing numbers.
+- **Tests**: `test/card-strategy.test.js` covers fixture-based routing + a real-KB smoke test that loads the live JSON.
 
 ### Household system
 Two or more users can form a household via share codes. Each user messages Budgy 1:1, but summaries and nudges reflect combined household spending for shared categories.
@@ -96,6 +108,7 @@ Run: `npm test` (jest --forceExit). Tests across 5 suites.
 - `test/dedup.test.js` — PDF transaction deduplication
 - `test/heartbeat.test.js` — nudge registry, overdue scoring, state persistence
 - `test/household.test.js` — household helpers (isSharedCategory, generateHouseholdId)
+- `test/card-strategy.test.js` — card rewards engine (alias matching, multiplier routing, noise control, grey-area gating, real-KB smoke)
 
 ### Git repo
 https://github.com/raagulmanoharan/ExpenseTracker

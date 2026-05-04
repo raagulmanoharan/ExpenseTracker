@@ -1,0 +1,186 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "lastUpdated": "2026-05-04",
+    "valuePerPointNotes": "INR values per point are conservative estimates based on best-effort transfer-partner redemption (Marriott Bonvoy for MR, KrisFlyer/AI for HSBC and EDGE). Real-world value varies."
+  },
+  "cards": {
+    "amex_platinum_charge": {
+      "displayName": "Amex Platinum Charge",
+      "aliases": ["AMEX PLAT", "AMEX PLATINUM", "PLATINUM CHARGE", "AMEX PLATINUM CHARGE", "AMERICAN EXPRESS PLATINUM", "AMEX"],
+      "baseEarn": { "pointsPer100": 1, "currency": "MR", "valuePerPointInr": 0.5 },
+      "categoryMultipliers": [
+        {
+          "categories": ["Shopping", "Food & Dining", "Food Delivery", "Travel"],
+          "multiplier": 5,
+          "merchantsLike": ["Reward Multiplier", "ShopWise", "Flipkart e-voucher", "Amazon e-voucher", "Zomato e-voucher", "Swiggy e-voucher", "Tanishq", "Apple", "Croma", "MakeMyTrip"],
+          "capPerMonth": null,
+          "note": "5X MR via Reward Multiplier portal (now ShopWise post-Feb 2026) on e-vouchers and partner brands. Multiplier varies 5X-10X by brand.",
+          "source": "https://cardinsider.com/blog/american-express-reward-multiplier/"
+        },
+        {
+          "categories": ["Travel"],
+          "multiplier": 5,
+          "merchantsLike": ["FHR", "Fine Hotels", "Amex Travel"],
+          "capPerMonth": null,
+          "note": "5X MR on prepaid FHR stays via Amex Travel portal (Platinum/Centurion exclusive)",
+          "source": "https://www.cardexpert.in/american-express-platinum-charge-card-review-india/"
+        }
+      ],
+      "milestones": [
+        {
+          "spendThreshold": 1000000,
+          "windowDays": 365,
+          "reward": "Taj Stay voucher Rs.10000 (annual renewal benefit)",
+          "source": "https://www.cardexpert.in/amex-platinum-birthday-benefit-taj-voucher/"
+        }
+      ],
+      "voucherTricks": [
+        {
+          "trick": "Buy Amazon/Flipkart/MakeMyTrip e-vouchers via Reward Multiplier (ShopWise) for 5X MR",
+          "category": "Shopping",
+          "multiplier": 5,
+          "valuePerPointInr": 0.5,
+          "valueEstimate": "~2-2.5% effective return when redeemed via Marriott/airline partners",
+          "greyArea": false,
+          "source": "https://www.cardexpert.in/amex-reward-multiplier-on-e-vouchers/"
+        }
+      ],
+      "exclusions": ["Utilities", "Rent"],
+      "exclusionsNote": "Fuel, insurance, utilities, cash excluded from base MR earn but DO count toward annual milestone targets and fee waivers (Amex India quirk).",
+      "exclusionsSource": "https://savesage.club/blogs/amex-mrcc-review-2025-top-benefits-rewards-fees-how-to-maximize-points",
+      "transferPartners": [
+        { "partner": "Marriott Bonvoy", "ratio": "1:1", "source": "https://livefromalounge.com/amex-marriott-bonvoy-conversion-bonus-through-2025/" },
+        { "partner": "Hilton Honors", "ratio": "1:0.9", "source": "https://cardinsider.com/american-express/american-express-credit-cards-reward-point-earning-transfer-partners/" }
+      ]
+    },
+
+    "hsbc_premier_mc": {
+      "displayName": "HSBC Premier Mastercard",
+      "aliases": ["HSBC PREMIER", "HSBC PREMIER MC", "HSBC PREMIER MASTERCARD", "HSBC PREMIER METAL", "HSBC"],
+      "baseEarn": { "pointsPer100": 3, "currency": "HSBC Points", "valuePerPointInr": 0.25 },
+      "categoryMultipliers": [
+        {
+          "categories": ["Travel"],
+          "multiplier": 4,
+          "merchantsLike": ["Travel with Points", "flights", "hotels", "car rental"],
+          "capPerMonth": null,
+          "note": "Up to 12X via HSBC Travel with Points portal (~4X uplift on top of base 3X)",
+          "source": "https://www.hsbc.co.in/credit-cards/products/premier/rewards/"
+        }
+      ],
+      "milestones": [],
+      "voucherTricks": [],
+      "exclusions": ["Rent"],
+      "exclusionsNote": "Effective Apr 1 2025: rent, tax, jewelry, education, e-wallets, fuel, bail/bond no longer earn. Utility & Insurance capped at Rs.1L/month for points. Accelerated earning capped at 18,000 points/month.",
+      "exclusionsSource": "https://livefromalounge.com/hsbc-premier-devaluation-april-2025/",
+      "transferPartners": [
+        { "partner": "Air India Maharaja Club", "ratio": "1:1", "source": "https://pointsmath.com/hsbc-points-transfer-partners-india/" },
+        { "partner": "Singapore Airlines KrisFlyer", "ratio": "1:1", "source": "https://pointsmath.com/hsbc-points-transfer-partners-india/" },
+        { "partner": "Accor Live Limitless", "ratio": "1:1", "source": "https://livefromalounge.com/hsbc-credit-cards-offering-50-percent-transfer-bonus-accor/" }
+      ],
+      "transferPartnersNote": "20 partners total (15 airlines, 5 hotels), mostly 1:1, instant via HSBC mobile app. Periodic 50% transfer bonuses to Accor."
+    },
+
+    "axis_magnus": {
+      "displayName": "Axis Magnus",
+      "aliases": ["AXIS MAGNUS", "MAGNUS", "AXIS BANK MAGNUS"],
+      "baseEarn": { "pointsPer100": 6, "currency": "EDGE Points", "valuePerPointInr": 0.2 },
+      "baseEarnNote": "12 EDGE points per Rs.200 = 6 per Rs.100, on monthly spends up to Rs.1.5L. Effective Jun 20 2025.",
+      "baseEarnSource": "https://livefromalounge.com/axis-bank-magnus-for-burgundy-caps-accelerated-edge-rewards/",
+      "categoryMultipliers": [
+        {
+          "categories": ["Shopping", "Food & Dining", "Travel", "Entertainment"],
+          "multiplier": 17.5,
+          "merchantsLike": [],
+          "capPerMonth": 150000,
+          "note": "35 EDGE points per Rs.200 (=17.5 per Rs.100) on incremental spends ABOVE Rs.1.5L/month, capped at credit limit + Rs.1.5L. Post-Jun 2025 devaluation.",
+          "source": "https://technofino.in/community/threads/axis-magnus-credit-card-devalued-t-c-update-may-2025.41005/"
+        }
+      ],
+      "milestones": [],
+      "milestonesNote": "Monthly Rs.1L milestone (25,000 bonus EDGE) was REMOVED in Jun 2025 devaluation.",
+      "milestonesSource": "https://cardtrail.in/news/axis-magnus-devaluation-2025/",
+      "voucherTricks": [],
+      "exclusions": ["Utilities", "Rent"],
+      "exclusionsNote": "Effective Oct 1 2025 (category-based): Utility & Telecom, Rent (capped Rs.50k/month with 1% fee), Wallet, Government, Insurance, Gold/Jewellery, Fuel, Cash advances, Repayments excluded from rewards and fee waiver.",
+      "exclusionsSource": "https://www.axis.bank.in/docs/default-source/default-document-library/credit-card-tnc/terms-and-conditions-for-magnus-credit-card.pdf",
+      "transferPartners": [
+        { "partner": "Singapore Airlines KrisFlyer", "ratio": "5:2", "source": "https://pointsmath.com/axis-bank-transfer-partners/" },
+        { "partner": "Air India Maharaja Club", "ratio": "5:2", "source": "https://pointsmath.com/axis-bank-transfer-partners/" },
+        { "partner": "ITC Green Points", "ratio": "5:2", "source": "https://pointsmath.com/axis-bank-transfer-partners/" }
+      ],
+      "transferPartnersNote": "Annual cap 5L EDGE points/CustomerID. Marriott, Accor, Qatar REMOVED Apr 2 2026. ITC remains as indirect bridge to Marriott.",
+      "greyAreaTricks": [
+        {
+          "trick": "Pay rent via CRED/NoBroker — but only Rs.50k/month earns base EDGE with 1% fee",
+          "warning": "Rent above Rs.50k/month earns no points; rent typically excluded from fee waiver post-Oct 2025.",
+          "source": "https://www.axis.bank.in/docs/default-source/default-document-library/credit-card-tnc/terms-and-conditions-for-magnus-credit-card.pdf"
+        }
+      ]
+    },
+
+    "axis_reserve": {
+      "displayName": "Axis Reserve",
+      "aliases": ["AXIS RESERVE", "RESERVE", "AXIS BANK RESERVE"],
+      "baseEarn": { "pointsPer100": 7.5, "currency": "EDGE Points", "valuePerPointInr": 0.2 },
+      "baseEarnNote": "15 EDGE points per Rs.200 = 7.5 per Rs.100 on domestic spends.",
+      "baseEarnSource": "https://www.paisabazaar.com/credit-card/axis-bank-reserve-credit-card/",
+      "categoryMultipliers": [
+        {
+          "categories": ["Travel", "Shopping", "Food & Dining"],
+          "multiplier": 15,
+          "merchantsLike": ["international", "foreign currency"],
+          "capPerMonth": null,
+          "note": "2X EDGE on international spends (30 per Rs.200) up to credit limit. Effective Jun 20 2025.",
+          "source": "https://livefromalounge.com/axis-bank-credit-cards-tweaks/"
+        }
+      ],
+      "milestones": [],
+      "milestonesNote": "Reserve has no spend-based milestone bonuses despite high annual fee.",
+      "milestonesSource": "https://cardinsider.com/axis-bank/axis-bank-reserve-credit-card/",
+      "voucherTricks": [],
+      "exclusions": ["Utilities", "Rent"],
+      "exclusionsNote": "Excluded: Utility & Telecom, Rent (capped Rs.1L/month), Wallet, Government, Insurance, Gold/Jewellery, Fuel, Cash advances, Repayments. Effective Jun 20 2025.",
+      "exclusionsSource": "https://www.axisbank.com/docs/default-source/default-document-library/credit-card-tnc/terms-and-conditions-for-reserve-credit-card.pdf",
+      "transferPartners": [
+        { "partner": "Singapore Airlines KrisFlyer", "ratio": "5:2", "source": "https://pointsmath.com/axis-bank-transfer-partners/" },
+        { "partner": "Air India Maharaja Club", "ratio": "5:2", "source": "https://pointsmath.com/axis-bank-transfer-partners/" }
+      ],
+      "transferPartnersNote": "Annual cap 5L EDGE. Marriott, Accor, Qatar REMOVED Apr 2 2026."
+    },
+
+    "axis_atlas": {
+      "displayName": "Axis Atlas",
+      "aliases": ["AXIS ATLAS", "ATLAS", "AXIS BANK ATLAS"],
+      "baseEarn": { "pointsPer100": 2, "currency": "EDGE Miles", "valuePerPointInr": 0.5 },
+      "baseEarnSource": "https://www.cardexpert.in/axis-atlas-credit-card-review/",
+      "categoryMultipliers": [
+        {
+          "categories": ["Travel"],
+          "multiplier": 5,
+          "merchantsLike": ["airlines", "hotel", "Travel EDGE"],
+          "capPerMonth": 200000,
+          "note": "5 EDGE Miles per Rs.100 on direct travel (airlines, hotels, Travel EDGE), capped Rs.2L/month.",
+          "source": "https://livefromalounge.com/axis-bank-atlas-credit-card-devaluation-2024/"
+        }
+      ],
+      "milestones": [
+        { "spendThreshold": 300000, "windowDays": 365, "reward": "Silver: 2,500 EDGE Miles", "source": "https://www.paisabazaar.com/axis-bank/atlas-credit-card/" },
+        { "spendThreshold": 750000, "windowDays": 365, "reward": "Gold: 5,000 EDGE Miles", "source": "https://www.paisabazaar.com/axis-bank/atlas-credit-card/" },
+        { "spendThreshold": 1500000, "windowDays": 365, "reward": "Platinum: 10,000 EDGE Miles", "source": "https://www.paisabazaar.com/axis-bank/atlas-credit-card/" }
+      ],
+      "voucherTricks": [],
+      "exclusions": ["Utilities", "Rent"],
+      "exclusionsNote": "Excluded from EDGE Miles AND fee waiver: Gold/Jewellery, Rent, Insurance, Wallet, Government, Utilities, Fuel. Effective Jun 20 2025: spend category, not MCC.",
+      "exclusionsSource": "https://technofino.in/community/threads/list-of-exclusions-for-axis-atlas-card-edge-miles.18329/",
+      "transferPartners": [
+        { "partner": "Singapore Airlines KrisFlyer", "ratio": "1:2", "source": "https://www.axis.bank.in/miles-transfer" },
+        { "partner": "Air India Maharaja Club", "ratio": "1:2", "source": "https://www.axis.bank.in/miles-transfer" },
+        { "partner": "Aeroplan (Air Canada)", "ratio": "1:2", "source": "https://savesage.club/blogs/axis-bank-transfer-partners-a-beginners-guide" },
+        { "partner": "JAL Mileage Bank", "ratio": "1:2", "source": "https://savesage.club/blogs/axis-bank-transfer-partners-a-beginners-guide" }
+      ],
+      "transferPartnersNote": "Standard ratio 1 EDGE Mile = 2 partner miles. Marriott, Accor, Qatar REMOVED Apr 2 2026."
+    }
+  }
+}

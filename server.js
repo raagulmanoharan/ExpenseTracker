@@ -22,6 +22,7 @@ const { sendWhatsAppTo, sendWhatsAppImageTo, sendWhatsAppInteractive, sendHouseh
 const { handleConversation } = require('./conversation');
 const { composeResponse } = require('./responder');
 const { searchNarratives } = require('./insights');
+const { suggestForExpense: suggestCardStrategy } = require('./card-strategy');
 
 const app = express();
 app.use(express.urlencoded({ extended: false, verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
@@ -767,13 +768,21 @@ async function handleExpenseResult(result, raw, from, user) {
       return null;
     }
 
+    let cardTip = null;
+    try {
+      cardTip = suggestCardStrategy({ amount, category, merchant }, freshUser || user);
+    } catch (e) {
+      console.error('[card-strategy] suggestion failed:', e.message);
+    }
+
     return await composeResponse('expense_logged', {
       amount, category, merchant, note,
       monthlyTotal: monthly.total, monthlyCount: monthly.count,
       cycleLabel: monthly.cycleLabel, breakdown: monthly.breakdown,
       anomaly: anomaly || null,
       budgetWarning,
-      overspend: overspend ? overspend.alerts.map(a => a.category + ' +' + a.pct + '%').join(', ') : null
+      overspend: overspend ? overspend.alerts.map(a => a.category + ' +' + a.pct + '%').join(', ') : null,
+      cardTip
     }, user);
 
   } else if (result.type === 'summary_monthly') {

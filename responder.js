@@ -69,9 +69,9 @@ function buildUserMessage(actionType, ctx, userName) {
 Expense: ₹${Number(ctx.amount).toLocaleString('en-IN')} — ${ctx.category}${ctx.merchant ? ' at ' + ctx.merchant : ''}${ctx.note ? ' (' + ctx.note + ')' : ''}
 Cycle total: ₹${ctx.monthlyTotal} (${ctx.monthlyCount} transactions)
 Cycle label: ${ctx.cycleLabel || 'This month'}
-${ctx.breakdown ? 'Top categories:\n' + ctx.breakdown : ''}${ctx.anomaly ? '\nANOMALY: ' + formatAnomalyForPrompt(ctx.anomaly, ctx.amount, ctx.category) : ''}${ctx.budgetWarning ? '\nBUDGET: ' + ctx.budgetWarning : ''}${ctx.overspend ? '\nOVERSPEND: ' + ctx.overspend : ''}
+${ctx.breakdown ? 'Top categories:\n' + ctx.breakdown : ''}${ctx.anomaly ? '\nANOMALY: ' + formatAnomalyForPrompt(ctx.anomaly, ctx.amount, ctx.category) : ''}${ctx.budgetWarning ? '\nBUDGET: ' + ctx.budgetWarning : ''}${ctx.overspend ? '\nOVERSPEND: ' + ctx.overspend : ''}${ctx.cardTip ? '\nCARD TIP (forward-looking, optional): ' + formatCardTipForPrompt(ctx.cardTip) : ''}
 
-Include the emoji for the category. Show the cycle total. If there's an anomaly or budget warning, mention it naturally (don't use a separate section).`;
+Include the emoji for the category. Show the cycle total. If there's an anomaly or budget warning, mention it naturally (don't use a separate section). If a CARD TIP is present, append it as a single short line below the confirmation prefixed with 💳 — keep it casual, mention the card, the multiplier, and the rupee upside. Don't moralize or push it; one line max.`;
 
     case 'expense_low_confidence':
       return `${nameCtx}The user logged an expense but I'm not confident about the category. Ask them to pick.
@@ -275,6 +275,18 @@ Format as a clean, scannable list for WhatsApp.`;
   }
 }
 
+function formatCardTipForPrompt(tip) {
+  const grey = tip.greyArea ? ' [grey-area: T&C risk]' : '';
+  const note = tip.bestRuleNote ? ' (' + tip.bestRuleNote + ')' : '';
+  return `Best card next time: ${tip.bestCard} at ${tip.bestMultiplier}x${note}. Approx upside vs your worst owned card: ₹${tip.upsideInr}.${grey}`;
+}
+
+function formatCardTipForReply(tip) {
+  const note = tip.bestRuleNote ? ' — ' + tip.bestRuleNote : '';
+  const grey = tip.greyArea ? ' _(grey-area)_' : '';
+  return `Next time: *${tip.bestCard}* (${tip.bestMultiplier}x)${note} → ~₹${tip.upsideInr} more${grey}`;
+}
+
 function formatAnomalyForPrompt(anomaly, amount, category) {
   if (anomaly.type === 'spike') {
     return `₹${Number(amount).toLocaleString('en-IN')} is ${anomaly.multiple}x the usual ${category} amount (avg ₹${anomaly.avg.toLocaleString('en-IN')})`;
@@ -309,6 +321,7 @@ function getFallback(actionType, ctx) {
         }
       }
       if (ctx.budgetWarning) reply += '\n' + ctx.budgetWarning;
+      if (ctx.cardTip) reply += '\n\n💳 ' + formatCardTipForReply(ctx.cardTip);
       return reply;
     }
 
