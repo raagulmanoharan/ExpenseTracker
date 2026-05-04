@@ -21,8 +21,6 @@
 const { loadKB, matchUserCards } = require('./card-strategy');
 const { isCommitted } = require('./constants');
 
-const KB_TO_USER_KEY_CACHE = new WeakMap();
-
 // Build a lookup of user-keys → KB cards, scoped to the user.
 function ownedKbMap(user) {
   const owned = matchUserCards(user);
@@ -120,9 +118,11 @@ function walkCycle(expenses, user) {
   const kb = loadKB();
   const owned = matchUserCards(user); // [{userKey, card}]
   const userKeyToKb = new Map(owned.map(o => [o.userKey, o.card]));
-  const sorted = [...expenses].sort((a, b) =>
-    (a.date || '').localeCompare(b.date || '') || ((a.created_at || '').localeCompare(b.created_at || ''))
-  );
+  const sorted = [...expenses].sort((a, b) => {
+    const dateDiff = new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime();
+    if (dateDiff !== 0) return dateDiff;
+    return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+  });
 
   const mtdByCard = {}; // userKey -> running INR
   for (const o of owned) mtdByCard[o.userKey] = 0;

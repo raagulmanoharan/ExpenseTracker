@@ -50,7 +50,7 @@ The heartbeat ticks every 30 minutes. On each tick:
 
 ### Key patterns
 - **Claude routes everything**: parser.js classifies intent, conversation.js handles data questions. No regex-based routing. Regex is only used for structured extraction AFTER Claude has classified the intent.
-- **Salary cycle bounds**: Configurable per user (fixed day, last day, last working day). Summary functions (`getMonthlySummary`, `getBudgetStatus`, `getCyclePaceAnalysis`) fetch user config from DB and pass to `getSalaryCycleBounds()`. Falls back to `PAY_DATES_2026` when no config set.
+- **Salary cycle bounds**: Configurable per user (fixed day, last day, last working day). Summary functions (`getMonthlySummary`, `getBudgetStatus`, `getCyclePaceAnalysis`) fetch user config from DB and pass to `getSalaryCycleBounds()`. Defaults to the calendar month when no config is set.
 - **Progressive setup (non-blocking)**: After 3rd expense, Budgy asks about credit cards (yes/no). After CC setup or 5th expense, asks about salary date. These are woven into expense confirmations, never blocking. `pendingSetup` Map tracks soft state, auto-expires after 1h. `setupHintsSent` prevents re-asking.
 - **Prompt injection guardrails**: parser.js and conversation.js treat user messages as DATA, not INSTRUCTIONS. Injection attempts return graceful deflections.
 - **composeResponse for everything**: All user-facing messages go through `responder.js`. Claude Haiku composes contextual replies. Static fallbacks on failure.
@@ -136,7 +136,7 @@ and cycle trends. `conversation.js` uses these when available, falls back to raw
 `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM`, `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WEBHOOK_URL` (optional, for signature validation), `PORT` (default 3000), `VOYAGE_API_KEY` (optional, for spending narrative embeddings — falls back to date-based retrieval without it).
 
 ### Testing
-Run: `npm test` (jest --forceExit). Tests across 5 suites.
+Run: `npm test` (jest --forceExit). Tests across 9 suites.
 - `test/constants.test.js` — utility functions
 - `test/utils.test.js` — salary parsing, cycle bounds, billing advice, statement input rejection
 - `test/dedup.test.js` — PDF transaction deduplication

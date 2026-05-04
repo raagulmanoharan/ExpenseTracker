@@ -13,7 +13,7 @@
 //     reduce the period's net spend.
 
 const axios = require('axios');
-const { client, callWithRetry } = require('./anthropic-client');
+const { client, callWithRetry, MODELS, cachedSystem } = require('./anthropic-client');
 const { CATEGORIES, safeParseJSON } = require('./constants');
 const { matchUserCards, loadKB } = require('./card-strategy');
 
@@ -133,9 +133,9 @@ async function parseCcStatement(input, user) {
       ];
 
   const response = await callWithRetry(() => client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: MODELS.ccStatement,
     max_tokens: 8000,
-    system: buildSystemPrompt(user),
+    system: cachedSystem(buildSystemPrompt(user)),
     messages: [{ role: 'user', content: userContent }]
   }));
 

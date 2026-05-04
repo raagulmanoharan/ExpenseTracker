@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { client, callWithRetry } = require('./anthropic-client');
+const { client, callWithRetry, MODELS, cachedSystem } = require('./anthropic-client');
 const { CATEGORIES, safeParseJSON, parseIndianDate } = require('./constants');
 
 function buildPdfSystemPrompt(user) {
@@ -55,9 +55,9 @@ async function parsePDFStatement(mediaUrl, user) {
   const base64PDF = Buffer.from(pdfResponse.data).toString('base64');
 
   const response = await callWithRetry(() => client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: MODELS.bankStatement,
     max_tokens: 4000,
-    system: buildPdfSystemPrompt(user),
+    system: cachedSystem(buildPdfSystemPrompt(user)),
     messages: [{
       role: 'user',
       content: [
