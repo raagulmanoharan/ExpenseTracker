@@ -396,4 +396,64 @@ async function getPersonalizedPlaybook(phone, opts = {}) {
   return { periodStart, periodEnd, entries, totalMonthlyUpsideInr, skipped };
 }
 
-module.exports = { getRewardsReport, getMissingRewards, getMilestoneProgress, getPersonalizedPlaybook, walkCycle };
+/**
+ * Day-of-week spending profile over the last 90 days. Aggregates across all
+ * categories per DOW, computes relative factor vs the global daily average,
+ * and surfaces top spending day + lightest day for behavioral insight.
+ */
+async function getDayOfWeekProfile(phone, opts = {}) {
+  const lookbackDays = opts.lookbackDays || 90;
+  const periodEnd = todayStr();
+  const periodStart = shiftDate(periodEnd, -lookbackDays);
+  const expenses = await opts.db.listExpensesInRange(phone, periodStart, periodEnd);
+  if (expenses.length === 0) {
+    return { period: { start: periodStart, end: periodEnd }, days: [], topDay: null, lightestDay: null, sampleSize: 0 };
+  }
+
+  // Aggregate by date so each day is one observation, then group by DOW.
+  const byDate = new Map();
+  for (const e of expenses) {
+    if (!e.date) continue;
+    if (!byDate.has(e.date)) byDate.set(e.date, 0);
+    byDate.set(e.date, byDate.get(e.date) + Number(e.amount || 0));
+  }
+
+  const sumByDow = [0, 0, 0, 0, 0, 0, 0];
+  const countByDow = [0, 0, 0, 0, 0, 0, 0];
+  for (const [date, amt] of byDate.entries()) {
+    const dow = new Date(date).getDay();
+    sumByDow[dow] += amt;
+    countByDow[dow]++;
+  }
+
+  const totalSum = sumByDow.reduce((a, b) => a + b, 0);
+  const totalCount = countByDow.reduce((a, b) => a + b, 0);
+  const globalAvg = totalCount > 0 ? totalSum / totalCount : 0;
+
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const days = dayNames.map((name, i) => {
+    const avg = countByDow[i] > 0 ? sumByDow[i] / countByDow[i] : 0;
+    return {
+      dow: i,
+      name,
+      avgPerDay: round2(avg),
+      observationDays: countByDow[i],
+      total: round2(sumByDow[i]),
+      factor: globalAvg > 0 ? round2(avg / globalAvg) : 1
+    };
+  });
+
+  const sortedDesc = [...days].sort((a, b) => b.avgPerDay - a.avgPerDay);
+  const sortedAsc = [...days].filter(d => d.observationDays > 0).sort((a, b) => a.avgPerDay - b.avgPerDay);
+
+  return {
+    period: { start: periodStart, end: periodEnd },
+    days,
+    topDay: sortedDesc[0] || null,
+    lightestDay: sortedAsc[0] || null,
+    globalAvgPerDay: round2(globalAvg),
+    sampleSize: byDate.size
+  };
+}
+
+module.exports = { getRewardsReport, getMissingRewards, getMilestoneProgress, getPersonalizedPlaybook, getDayOfWeekProfile, walkCycle };

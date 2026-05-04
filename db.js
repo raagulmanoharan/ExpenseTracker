@@ -9,7 +9,8 @@ const {
   buildCategoryTotals, buildSummaryText, buildDiscretionarySplit, buildProgressBar,
   getISOWeek,
   parseSalaryInput, parseStatementInput, getDaysUntilStatement, getBillingCycleAdvice,
-  isWithinSessionWindow, generateHouseholdId
+  isWithinSessionWindow, generateHouseholdId,
+  computeEwma, computeDowFactors, projectRemainingCycle
 } = require('./utils');
 
 // ─── Supabase client (singleton) ────────────────────────────────────────────
@@ -609,7 +610,68 @@ async function getCyclePaceAnalysis(phone) {
       daily: daysElapsed > 0 ? Math.round(amt / daysElapsed) : 0
     }));
 
-  const projection = { dailyRate: Math.round(dailyRate), projectedTotal, topCategories };
+  // ─── EWMA + DOW-aware projection (additive — keeps fields above for compat).
+  // Build a daily series of discretionary spend within the current cycle.
+  const dailySpendInCycle = []; // [{date: Date, amount: number}]
+  for (let i = 0; i < daysElapsed; i++) {
+    const day = new Date(cycleStart);
+    day.setDate(day.getDate() + i);
+    dailySpendInCycle.push({ date: new Date(day), amount: 0 });
+  }
+  const dayKey = d => new Date(d).toISOString().split('T')[0];
+  const dailyMap = new Map(dailySpendInCycle.map(x => [dayKey(x.date), x]));
+  for (const r of rows) {
+    if (!r[0] || !r[2]) continue;
+    const d = require('./constants').parseIndianDate(r[0]);
+    if (!d || d < cycleStart || d > now) continue;
+    const cat = r[3] || 'Other';
+    if (isCommitted(cat)) continue;
+    const k = dayKey(d);
+    const slot = dailyMap.get(k);
+    if (slot) slot.amount += parseFloat(r[2]) || 0;
+  }
+  const ewmaDailyRate = computeEwma(dailySpendInCycle.map(x => x.amount), 7);
+
+  // DOW factors from last 90 days of *all* discretionary spend (broader sample
+  // than just the current cycle).
+  const dowHistory = [];
+  const ninetyDaysAgo = new Date(now);
+  ninetyDaysAgo.setDate(now.getDate() - 90);
+  // Aggregate by day for DOW calc.
+  const dowByDay = new Map();
+  for (const r of rows) {
+    if (!r[0] || !r[2]) continue;
+    const d = require('./constants').parseIndianDate(r[0]);
+    if (!d || d < ninetyDaysAgo || d > now) continue;
+    const cat = r[3] || 'Other';
+    if (isCommitted(cat)) continue;
+    const k = dayKey(d);
+    if (!dowByDay.has(k)) dowByDay.set(k, { date: d, amount: 0 });
+    dowByDay.get(k).amount += parseFloat(r[2]) || 0;
+  }
+  for (const v of dowByDay.values()) dowHistory.push(v);
+  const { factors: dowFactors, avgByDow, counts: dowCounts } = computeDowFactors(dowHistory);
+
+  // Project remaining days: ewmaDailyRate × dowFactor for each remaining day.
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  tomorrow.setHours(0, 0, 0, 0);
+  const projectedRemaining = projectRemainingCycle(tomorrow, cycleEnd, ewmaDailyRate, dowFactors);
+  const projectedTotalEwma = Math.round(discretionaryTotal + projectedRemaining);
+
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const dowFactorsByName = Object.fromEntries(dayNames.map((n, i) => [n, Math.round(dowFactors[i] * 100) / 100]));
+
+  const projection = {
+    dailyRate: Math.round(dailyRate),
+    projectedTotal,
+    topCategories,
+    ewmaDailyRate: Math.round(ewmaDailyRate),
+    projectedTotalEwma,
+    dowFactors: dowFactorsByName,
+    dowAvgByName: Object.fromEntries(dayNames.map((n, i) => [n, Math.round(avgByDow[i] || 0)])),
+    dowCountsByName: Object.fromEntries(dayNames.map((n, i) => [n, dowCounts[i]]))
+  };
 
   const prevCycleEnd = new Date(cycleStart);
   prevCycleEnd.setDate(prevCycleEnd.getDate() - 1);

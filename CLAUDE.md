@@ -54,7 +54,8 @@ The heartbeat ticks every 30 minutes. On each tick:
 - **Progressive setup (non-blocking)**: After 3rd expense, Budgy asks about credit cards (yes/no). After CC setup or 5th expense, asks about salary date. These are woven into expense confirmations, never blocking. `pendingSetup` Map tracks soft state, auto-expires after 1h. `setupHintsSent` prevents re-asking.
 - **Prompt injection guardrails**: parser.js and conversation.js treat user messages as DATA, not INSTRUCTIONS. Injection attempts return graceful deflections.
 - **composeResponse for everything**: All user-facing messages go through `responder.js`. Claude Haiku composes contextual replies. Static fallbacks on failure.
-- **Projection-based pace analysis**: `dailyRate * totalCycleDays = projectedTotal`. Comparison requires 3+ categories and Rs.2000+ in previous cycle.
+- **Projection-based pace analysis**: `dailyRate * totalCycleDays = projectedTotal`. Comparison requires 3+ categories and Rs.2000+ in previous cycle. **EWMA + DOW projection (additive):** also returns `ewmaDailyRate` (7-day half-life) and `projectedTotalEwma` (EWMA daily rate × DOW factor for each remaining day, summed + added to actual cycle-to-date). Recent days weight more; the projection respects "you spend 2x on Saturdays" patterns. Pure helpers in utils.js: `computeEwma`, `computeDowFactors`, `projectRemainingCycle` — all tested in `test/forecasting.test.js`.
+- **`weekday pattern` WhatsApp command**: returns the user's day-of-week spending profile from the last 90 days. Top day vs lightest day, factor relative to global avg.
 - **Response-sent guard**: `sendResponse()` in webhook prevents double TwiML sends on async paths (PDF processing, chart sending).
 - **Onboarding**: New users get name prompt -> profile creation. Existing users without profiles get silent auto-creation.
 
@@ -143,7 +144,8 @@ Run: `npm test` (jest --forceExit). Tests across 5 suites.
 - `test/household.test.js` — household helpers (isSharedCategory, generateHouseholdId)
 - `test/card-strategy.test.js` — card rewards engine (alias matching, multiplier routing, noise control, grey-area gating, real-KB smoke)
 - `test/cc-reconciler.test.js` — CC statement reconciler (insert/update/conflict decisions, date-fix, dry-run, idempotency)
-- `test/analytics.test.js` — card-rewards analytics (walkCycle, per-card aggregation, missing-reward routing, milestone progress, real-KB)
+- `test/analytics.test.js` — card-rewards analytics (walkCycle, per-card aggregation, missing-reward routing, milestone progress, playbook, real-KB)
+- `test/forecasting.test.js` — EWMA, day-of-week factors, remaining-cycle projection, getDayOfWeekProfile
 
 ### Git repo
 https://github.com/raagulmanoharan/ExpenseTracker

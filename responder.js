@@ -290,6 +290,18 @@ ${(ctx.top || []).map(t => `  ${t.date} · ₹${Math.round(t.amount).toLocaleStr
 
 Format as a punchy WhatsApp message. If top is empty, say "you're optimizing perfectly this cycle". Otherwise lead with the total missed, then a numbered list of the top 3-5. Keep it short.`;
 
+    case 'weekday_pattern':
+      return `${nameCtx}Compose a day-of-week spending pattern insight from the user's last 90 days.
+
+Period: ${ctx.period?.start} → ${ctx.period?.end} · ${ctx.sampleSize || 0} sample days
+Global avg: ₹${ctx.globalAvgPerDay} per day
+Top spending day: ${ctx.topDay ? ctx.topDay.name + ' (avg ₹' + ctx.topDay.avgPerDay + ', ' + ctx.topDay.factor + 'x global)' : 'n/a'}
+Lightest day: ${ctx.lightestDay ? ctx.lightestDay.name + ' (avg ₹' + ctx.lightestDay.avgPerDay + ')' : 'n/a'}
+Per-day breakdown:
+${(ctx.days || []).map(d => `  ${d.name}: ₹${d.avgPerDay}/day (${d.factor}x global, ${d.observationDays} days observed)`).join('\n')}
+
+Format as a short, behavioral WhatsApp message. Lead with the headline pattern (top day vs lightest). One scannable per-day list. If sample is small (<14 days observed), caveat the conclusion. Use 📅 emoji.`;
+
     case 'playbook':
       return `${nameCtx}Compose a personalized credit-card optimization playbook based on the user's actual spending in the last 90 days.
 
@@ -486,6 +498,23 @@ function getFallback(actionType, ctx) {
       return '⚠️ *Missed rewards — ' + (ctx.cycleLabel || 'this cycle') + '*\n' +
         'Total missed: ~₹' + ctx.totalMissedInr + ' across ' + ctx.consideredTxnCount + ' txns\n\n' +
         lines;
+    }
+
+    case 'weekday_pattern': {
+      if (!ctx.days || ctx.sampleSize === 0) {
+        return '📅 Not enough data yet — log a few weeks of expenses and I\'ll surface your weekly pattern.';
+      }
+      const top = ctx.topDay;
+      const lightest = ctx.lightestDay;
+      const headline = '📅 *Weekly spending pattern* (last 90d)\n\n' +
+        '*' + (top?.name || '?') + '* is your heaviest day (₹' + (top?.avgPerDay || 0) +
+        '/day, ' + (top?.factor || 1) + 'x global avg).\n' +
+        '*' + (lightest?.name || '?') + '* is your lightest (₹' + (lightest?.avgPerDay || 0) + '/day).\n\n';
+      const lines = ctx.days.map(d =>
+        d.name + ': ₹' + d.avgPerDay + '/day (' + d.factor + 'x' +
+        (d.observationDays > 0 ? ', ' + d.observationDays + ' days' : '') + ')'
+      ).join('\n');
+      return headline + lines;
     }
 
     case 'playbook': {

@@ -54,6 +54,9 @@ Milestone progress ("milestone", "milestone progress", "voucher progress", "spen
 Personalized playbook ("playbook", "optimization", "how to maximize", "how should I spend", "best way to spend", "show me my playbook", "optimize my spending"):
 {"type":"playbook"}
 
+Day-of-week pattern ("weekday pattern", "weekly pattern", "which day do I spend most", "spending by day", "day of week", "when do I spend"):
+{"type":"weekday_pattern"}
+
 HOUSEHOLD INTENTS:
 
 Create a household ("create household", "create a household", "I want to add household", "make me a family group", "set up household tracking"):
