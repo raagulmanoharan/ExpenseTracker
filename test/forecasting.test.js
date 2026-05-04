@@ -110,10 +110,10 @@ describe('getDayOfWeekProfile (analytics)', () => {
 
   test('aggregates by date, then groups by DOW', async () => {
     const rows = [
-      { date: '2026-04-04', amount: 100 }, // Saturday
-      { date: '2026-04-04', amount: 200 }, // Saturday — same day, sums to 300
-      { date: '2026-04-06', amount: 50 },  // Monday
-      { date: '2026-04-13', amount: 80 }   // Monday
+      { date: '2026-04-04', amount: 100, category: 'Shopping' }, // Saturday
+      { date: '2026-04-04', amount: 200, category: 'Shopping' }, // Saturday — same day, sums to 300
+      { date: '2026-04-06', amount: 50, category: 'Shopping' },  // Monday
+      { date: '2026-04-13', amount: 80, category: 'Shopping' }   // Monday
     ];
     const r = await getDayOfWeekProfile('whatsapp:+91X', { db: mockDb(rows) });
     expect(r.sampleSize).toBe(3); // 3 unique dates
@@ -126,6 +126,23 @@ describe('getDayOfWeekProfile (analytics)', () => {
     expect(r.topDay.name).toBe('Sat');
   });
 
+  test('excludes committed categories (rent/utilities/EMI/etc.)', async () => {
+    // Sun = 4 Jan, Mon = 5 Jan ... So 1 Jan is a Thu, 2 Jan is a Fri.
+    // ₹30k rent on 1st (Thu) shouldn't make Thu look heavy.
+    const rows = [
+      { date: '2026-01-01', amount: 30000, category: 'Rent' },          // Thu — should be filtered out
+      { date: '2026-01-01', amount: 8000, category: 'Loan EMI' },       // Thu — filtered
+      { date: '2026-01-15', amount: 2500, category: 'Utilities' },      // Thu — filtered
+      { date: '2026-01-04', amount: 800, category: 'Food Delivery' },   // Sun — should count
+      { date: '2026-01-05', amount: 600, category: 'Shopping' }         // Mon — should count
+    ];
+    const r = await getDayOfWeekProfile('whatsapp:+91X', { db: mockDb(rows) });
+    expect(r.sampleSize).toBe(2); // only Sun + Mon are kept
+    expect(r.days[4].total).toBe(0); // Thu, filtered out entirely
+    expect(r.days[0].total).toBeCloseTo(800, 0); // Sun
+    expect(r.days[1].total).toBeCloseTo(600, 0); // Mon
+  });
+
   test('factor reflects relative spend vs global avg', async () => {
     const rows = [];
     // 4 saturdays at 500 each, 4 mondays at 50 each
@@ -133,7 +150,7 @@ describe('getDayOfWeekProfile (analytics)', () => {
       ['2026-04-04', 500], ['2026-04-11', 500], ['2026-04-18', 500], ['2026-04-25', 500],
       ['2026-04-06', 50], ['2026-04-13', 50], ['2026-04-20', 50], ['2026-04-27', 50]
     ];
-    for (const [d, a] of dates) rows.push({ date: d, amount: a });
+    for (const [d, a] of dates) rows.push({ date: d, amount: a, category: 'Shopping' });
     const r = await getDayOfWeekProfile('whatsapp:+91X', { db: mockDb(rows) });
     expect(r.days[6].factor).toBeGreaterThan(1.5);
     expect(r.days[1].factor).toBeLessThan(0.5);

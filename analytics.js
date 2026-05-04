@@ -19,6 +19,7 @@
 // to the user's salary cycle.
 
 const { loadKB, matchUserCards } = require('./card-strategy');
+const { isCommitted } = require('./constants');
 
 const KB_TO_USER_KEY_CACHE = new WeakMap();
 
@@ -406,13 +407,17 @@ async function getDayOfWeekProfile(phone, opts = {}) {
   const periodEnd = todayStr();
   const periodStart = shiftDate(periodEnd, -lookbackDays);
   const expenses = await opts.db.listExpensesInRange(phone, periodStart, periodEnd);
-  if (expenses.length === 0) {
+  // Exclude committed categories (Rent, Utilities, EMI, Investments, Family
+  // Transfer, Subscriptions, Credit Card Payment) — those land on fixed
+  // calendar days and bias the DOW signal away from real behavior.
+  const discretionary = expenses.filter(e => e && e.category && !isCommitted(e.category));
+  if (discretionary.length === 0) {
     return { period: { start: periodStart, end: periodEnd }, days: [], topDay: null, lightestDay: null, sampleSize: 0 };
   }
 
   // Aggregate by date so each day is one observation, then group by DOW.
   const byDate = new Map();
-  for (const e of expenses) {
+  for (const e of discretionary) {
     if (!e.date) continue;
     if (!byDate.has(e.date)) byDate.set(e.date, 0);
     byDate.set(e.date, byDate.get(e.date) + Number(e.amount || 0));
