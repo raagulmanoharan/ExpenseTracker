@@ -160,10 +160,9 @@
         {
           "categories": ["Travel"],
           "multiplier": 5,
-          "merchantsLike": ["airlines", "hotel", "Travel EDGE"],
           "capPerMonth": 200000,
           "capType": "limit",
-          "note": "5 EDGE Miles per Rs.100 on direct travel (airlines, hotels, Travel EDGE), capped Rs.2L/month. Above cap reverts to base 2.",
+          "note": "5 EDGE Miles per Rs.100 on direct travel — book through airline/hotel directly or via Travel EDGE for the full 5x. Capped at Rs.2L/month, base 2 above.",
           "source": "https://livefromalounge.com/axis-bank-atlas-credit-card-devaluation-2024/"
         }
       ],
@@ -183,6 +182,83 @@
         { "partner": "JAL Mileage Bank", "ratio": "1:2", "source": "https://savesage.club/blogs/axis-bank-transfer-partners-a-beginners-guide" }
       ],
       "transferPartnersNote": "Standard ratio 1 EDGE Mile = 2 partner miles. Marriott, Accor, Qatar REMOVED Apr 2 2026."
+    },
+
+    "hdfc_swiggy": {
+      "displayName": "HDFC Swiggy",
+      "aliases": ["HDFC SWIGGY", "SWIGGY HDFC", "SWIGGY HDFC BANK", "HDFC SWIGGY CC"],
+      "baseEarn": { "pointsPer100": 1, "currency": "Cashback", "valuePerPointInr": 1 },
+      "baseEarnNote": "1% cashback on most spends; this card models cashback as 1 INR per 'point' for direct rupee comparisons.",
+      "categoryMultipliers": [
+        {
+          "categories": ["Food Delivery", "Food & Dining"],
+          "multiplier": 10,
+          "merchantsLike": ["Swiggy", "Swiggy Instamart", "Swiggy Genie", "Swiggy Dineout"],
+          "capPerMonth": 1500,
+          "capType": "limit",
+          "minTxnInr": 249,
+          "note": "10% cashback on Swiggy app spends (Food, Instamart, Dineout, Genie). Monthly cap Rs.1,500 cashback. Per-txn minimum raised to Rs.249 effective 17-Apr-2026 (was Rs.100). Excludes Swiggy Money wallet loads, Minis, Liquor.",
+          "source": "https://www.paisabazaar.com/hdfc-bank/swiggy-credit-card/"
+        },
+        {
+          "categories": ["Shopping", "Transport", "Personal Care", "Entertainment", "Health & Fitness"],
+          "multiplier": 5,
+          "capPerMonth": 1500,
+          "capType": "limit",
+          "minTxnInr": 100,
+          "note": "5% cashback on online spends (apparel, electronics, dept stores, personal care, local cabs, home decor, pet stores, pharmacies, discount stores, entertainment). Monthly cap Rs.1,500. Excludes flight/hotel bookings.",
+          "source": "https://www.paisabazaar.com/hdfc-bank/swiggy-credit-card/"
+        }
+      ],
+      "milestones": [],
+      "voucherTricks": [],
+      "exclusions": ["Rent", "Utilities", "Loan EMI", "Credit Card Payment", "Investments"],
+      "exclusionsNote": "No cashback on Fuel, Rent, Utilities, Insurance, EMI, Jewellery, Government spends, Wallet loads, Swiggy Money/Minis/Liquor. 5% tier additionally excludes flight/hotel bookings.",
+      "exclusionsSource": "https://www.paisabazaar.com/hdfc-bank/swiggy-credit-card/",
+      "devaluations": [
+        {
+          "date": "2026-04-17",
+          "change": "Per-transaction minimum for 10% Swiggy cashback raised from Rs.100 to Rs.249.",
+          "source": "https://www.desidime.com/discussions/swiggy-hdfc-credit-card-cashback-policy-change-from-17-apr-2026"
+        }
+      ]
+    },
+
+    "icici_amazon_pay": {
+      "displayName": "ICICI Amazon Pay",
+      "aliases": ["AMAZON PAY ICICI", "ICICI AMAZON", "ICICI AMAZON PAY", "AMAZON ICICI", "AMAZON PAY ICICI BANK"],
+      "baseEarn": { "pointsPer100": 1, "currency": "Reward Points", "valuePerPointInr": 1 },
+      "baseEarnNote": "1% cashback on most non-Amazon spends; cashback modelled at 1 INR per 'point' for direct rupee comparisons.",
+      "categoryMultipliers": [
+        {
+          "categories": ["Shopping"],
+          "multiplier": 5,
+          "merchantsLike": ["Amazon", "Amazon.in"],
+          "capPerMonth": null,
+          "note": "5% cashback on Amazon.in for Prime members (3% for non-Prime). Excludes gold coins, EMI, rent, tax, education on Amazon (post 11-Oct-2025 devaluation).",
+          "source": "https://www.threads.com/@dobaniye/post/DOxAwevEjeE/amazon-icici-credit-card-changes-effective-11-oct-2025"
+        },
+        {
+          "categories": ["Shopping", "Food Delivery", "Travel", "Subscriptions"],
+          "multiplier": 2,
+          "merchantsLike": ["Amazon Pay"],
+          "capPerMonth": null,
+          "note": "2% cashback on transactions at 100+ Amazon Pay partner merchants when paid via Amazon Pay (flights, hotels, partner subscriptions, bills routed through Amazon Pay).",
+          "source": "https://cardinsider.com/icici-bank/amazon-pay-icici-bank-credit-card/"
+        }
+      ],
+      "milestones": [],
+      "voucherTricks": [],
+      "exclusions": ["Rent", "Utilities", "Loan EMI", "Credit Card Payment", "Investments"],
+      "exclusionsNote": "Effective 11-Oct-2025: no rewards on rent, tax, education, fuel, utilities, EMI, international (outside Amazon). On Amazon: gold coins, EMI, rent, tax, education excluded. Forex markup cut to 1.99%.",
+      "exclusionsSource": "https://www.desidime.com/discussions/devaluation-amazon-pay-icici-bank-credit-effective-oct-11-2025",
+      "devaluations": [
+        {
+          "date": "2025-10-11",
+          "change": "Cashback exclusions expanded across non-Amazon spends; Amazon-specific exclusions also added. Forex markup cut from 3.5% to 1.99%.",
+          "source": "https://www.threads.com/@dobaniye/post/DOxAwevEjeE/amazon-icici-credit-card-changes-effective-11-oct-2025"
+        }
+      ]
     }
   }
 }
