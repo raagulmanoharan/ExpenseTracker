@@ -7,7 +7,7 @@
   "cards": {
     "amex_platinum_charge": {
       "displayName": "Amex Platinum Charge",
-      "aliases": ["AMEX PLAT", "AMEX PLATINUM", "PLATINUM CHARGE", "AMEX PLATINUM CHARGE", "AMERICAN EXPRESS PLATINUM", "AMEX"],
+      "aliases": ["PLATINUM CHARGE", "AMEX PLATINUM CHARGE", "AMERICAN EXPRESS PLATINUM CHARGE", "AMEX PLAT CHARGE"],
       "baseEarn": { "pointsPer100": 1, "currency": "MR", "valuePerPointInr": 0.5 },
       "categoryMultipliers": [
         {
@@ -182,6 +182,49 @@
         { "partner": "JAL Mileage Bank", "ratio": "1:2", "source": "https://savesage.club/blogs/axis-bank-transfer-partners-a-beginners-guide" }
       ],
       "transferPartnersNote": "Standard ratio 1 EDGE Mile = 2 partner miles. Marriott, Accor, Qatar REMOVED Apr 2 2026."
+    },
+
+    "amex_platinum_travel": {
+      "displayName": "Amex Platinum Travel",
+      "aliases": ["AMEX PLAT TRAVEL", "AMEX PLATINUM TRAVEL", "PLATINUM TRAVEL", "AMEX TRAVEL", "AMEX"],
+      "baseEarn": { "pointsPer100": 2, "currency": "MR", "valuePerPointInr": 0.5 },
+      "baseEarnNote": "1 MR per Rs.50 = 2 MR per Rs.100. Real INR value: ~0.25 statement credit, ~0.40 Taj voucher, ~0.50 Marriott/airline transfer.",
+      "baseEarnSource": "https://www.americanexpress.com/in/credit-cards/platinum-travel-credit-card/",
+      "categoryMultipliers": [
+        {
+          "categories": ["Shopping", "Food Delivery", "Travel"],
+          "multiplier": 5,
+          "merchantsLike": ["Reward Multiplier", "Amazon", "Flipkart", "Myntra", "MakeMyTrip", "Tanishq", "Apple", "Croma", "Dyson", "Zomato"],
+          "capPerMonth": null,
+          "note": "5x-10x MR via Amex Reward Multiplier portal at partner merchants — must route purchase through the RM landing page. Bonus MR cap ~25,000/month (rarely binds in practice).",
+          "source": "https://www.americanexpress.com/in/benefits/rewards-programs/reward-multiplier/"
+        }
+      ],
+      "milestones": [
+        { "spendThreshold": 190000, "windowDays": 365, "reward": "7,500 bonus MR points", "source": "https://www.americanexpress.com/in/credit-cards/platinum-travel-credit-card/" },
+        { "spendThreshold": 400000, "windowDays": 365, "reward": "10,000 bonus MR points (cumulative with 1.9L tier)", "source": "https://www.americanexpress.com/in/credit-cards/platinum-travel-credit-card/" },
+        { "spendThreshold": 700000, "windowDays": 365, "reward": "22,500 bonus MR + Rs.10,000 Taj/SeleQtions/Vivanta stay voucher", "source": "https://cardinsider.com/american-express/american-express-platinum-travel-credit-card/" }
+      ],
+      "voucherTricks": [],
+      "redemptionTips": [
+        {
+          "tip": "Redeem 25,000 MR for Rs.10,000 Taj voucher (Platinum Travel Collection) — yields 0.40 INR/point vs 0.25 for statement credit",
+          "valueEstimate": "0.40 INR per MR point",
+          "source": "https://cardinsider.com/american-express/american-express-platinum-travel-credit-card/"
+        }
+      ],
+      "exclusions": ["Utilities", "Rent", "Loan EMI", "Investments", "Credit Card Payment"],
+      "exclusionsNote": "Excluded from base MR earn: rent, fuel, insurance, EMI conversions, wallet loads, cash. BUT these still count toward annual milestone targets (1.9L / 4L / 7L) — Amex India quirk.",
+      "exclusionsSource": "https://www.americanexpress.com/in/benefits/platinum-travel-credit-card/",
+      "transferPartners": [
+        { "partner": "Marriott Bonvoy", "ratio": "1:1", "source": "https://cardinsider.com/american-express/american-express-credit-cards-reward-point-earning-transfer-partners/" },
+        { "partner": "Hilton Honors", "ratio": "1:2", "source": "https://cardinsider.com/american-express/american-express-credit-cards-reward-point-earning-transfer-partners/" },
+        { "partner": "Singapore Airlines KrisFlyer", "ratio": "1:1", "source": "https://cardinsider.com/american-express/american-express-credit-cards-reward-point-earning-transfer-partners/" },
+        { "partner": "British Airways Avios", "ratio": "1:1", "source": "https://cardinsider.com/american-express/american-express-credit-cards-reward-point-earning-transfer-partners/" },
+        { "partner": "Etihad Guest", "ratio": "1:1", "source": "https://cardinsider.com/american-express/american-express-credit-cards-reward-point-earning-transfer-partners/" },
+        { "partner": "Qatar Airways Privilege Club", "ratio": "1:1", "source": "https://cardinsider.com/american-express/american-express-credit-cards-reward-point-earning-transfer-partners/" },
+        { "partner": "Emirates Skywards", "ratio": "1:1", "source": "https://cardinsider.com/american-express/american-express-credit-cards-reward-point-earning-transfer-partners/" }
+      ]
     },
 
     "hdfc_swiggy": {
